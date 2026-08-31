@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+root=$(dirname "$script_dir")
+user_runtime_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+runtime_dir=${AGENTSEAT_RUNTIME_DIR:-$user_runtime_dir/agentseat}
+state_base=${XDG_STATE_HOME:-$HOME/.local/state}
+state_dir=${AGENTSEAT_STATE_HOME:-$state_base/agentseat}
+log_dir="$state_dir/logs"
+pid_file="$runtime_dir/microhost.pid"
+log="$log_dir/microhost.log"
+launcher="$root/bin/launch-app"
+
+umask 077
+mkdir -p "$runtime_dir" "$log_dir"
+chmod 700 "$runtime_dir" "$state_dir" "$log_dir"
+printf '%s\n' "$$" >"$pid_file"
+
+# Cage is a single-application wlroots host. Pixman keeps this boundary on the
+# integrated CPU path and avoids waking the compute-only NVIDIA device.
+export WLR_BACKENDS=wayland
+export WLR_RENDERER=pixman
+export XCURSOR_SIZE=20
+export AGENTSEAT_ROOT="$root"
+export AGENTSEAT_RUNTIME_DIR="$runtime_dir"
+export AGENTSEAT_LAUNCH_SPEC="$runtime_dir/launch.json"
+export AGENTSEAT_ENV_RECEIPT="$runtime_dir/application-env.json"
+export AGENTSEAT_READY_FILE="$runtime_dir/microhost.ready"
+export AGENTSEAT_ACTIVITY_SOCKET="$runtime_dir/human.sock"
+
+exec "$root/bin/agentseat-microhost" -d -- "$launcher" >>"$log" 2>&1

@@ -1,0 +1,10 @@
+[general]
+# Host workspace used when --host-workspace is omitted.
+default_workspace = 1
+
+# Physical input inside the wrapper temporarily pauses Agent input for this long.
+human_priority_grace_ms = 1500
+
+# Opt in to the draggable collaboration head inside the private application tree.
+# It stays completely hidden by default and is not required for Agent control.
+eye_hud = false

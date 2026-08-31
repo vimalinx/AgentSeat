@@ -1,0 +1,1123 @@
+#!/usr/bin/env python3
+"""Operate one foreground application through the isolated AgentSeat wrapper."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import csv
+import json
+import math
+import os
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import time
+import tomllib
+import uuid
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(os.environ.get("AGENTSEAT_ROOT", Path(__file__).resolve().parents[1])).resolve()
+AGENTSEAT_VERSION = "0.5.0"
+USER_HOME = Path.home()
+CONFIG_HOME = Path(
+    os.environ.get(
+        "AGENTSEAT_CONFIG_HOME",
+        Path(os.environ.get("XDG_CONFIG_HOME", USER_HOME / ".config")) / "agentseat",
+    )
+).expanduser().resolve()
+DATA_HOME = Path(
+    os.environ.get(
+        "AGENTSEAT_DATA_HOME",
+        Path(os.environ.get("XDG_DATA_HOME", USER_HOME / ".local/share")) / "agentseat",
+    )
+).expanduser().resolve()
+STATE_HOME = Path(
+    os.environ.get(
+        "AGENTSEAT_STATE_HOME",
+        Path(os.environ.get("XDG_STATE_HOME", USER_HOME / ".local/state")) / "agentseat",
+    )
+).expanduser().resolve()
+CACHE_HOME = Path(
+    os.environ.get(
+        "AGENTSEAT_CACHE_HOME",
+        Path(os.environ.get("XDG_CACHE_HOME", USER_HOME / ".cache")) / "agentseat",
+    )
+).expanduser().resolve()
+USER_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+RUNTIME = Path(os.environ.get("AGENTSEAT_RUNTIME_DIR", USER_RUNTIME_DIR / "agentseat")).expanduser().resolve()
+LOG_DIR = STATE_HOME / "logs"
+EVIDENCE = STATE_HOME / "captures"
+CONFIG_FILE = Path(os.environ.get("AGENTSEAT_CONFIG_FILE", CONFIG_HOME / "config.toml")).expanduser().resolve()
+STATE = RUNTIME / "state.json"
+LAUNCH_SPEC = RUNTIME / "launch.json"
+NATIVE_DAEMON = ROOT / "bin/agentseatd"
+EYE_BINARY = ROOT / "bin/agentseat-eye"
+RUN_MICROHOST = ROOT / "bin/run-microhost"
+LAUNCH_APP = ROOT / "bin/launch-app"
+CLIPBOARD_OWNER = ROOT / "bin/x11-clipboard-owner"
+MICROHOST_EXE = ROOT / "bin/agentseat-microhost"
+GRIM = Path("/usr/bin/grim")
+WL_COPY = Path("/usr/bin/wl-copy")
+WL_PASTE = Path("/usr/bin/wl-paste")
+MICROHOST_PID = RUNTIME / "microhost.pid"
+EYE_PID = RUNTIME / "eye.pid"
+APPLICATION_ENV = RUNTIME / "application-env.json"
+MICROHOST_READY = RUNTIME / "microhost.ready"
+CONTROL_SOCKET = RUNTIME / "control.sock"
+ACTIVITY_SOCKET = RUNTIME / "human.sock"
+RPC_LIMIT = 1_048_576
+DEFAULT_PREFERENCES: dict[str, Any] = {
+    "default_workspace": 1,
+    "human_priority_grace_ms": 1500,
+    "eye_hud": False,
+}
+PREFERENCES = dict(DEFAULT_PREFERENCES)
+
+
+class AgentSeatError(RuntimeError):
+    pass
+
+
+def run(argv: list[str], *, env: dict[str, str] | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(argv, text=True, capture_output=True, env=env, check=False)
+    if check and result.returncode:
+        raise AgentSeatError(result.stderr.strip() or result.stdout.strip() or f"command failed: {argv[0]}")
+    return result
+
+
+def output_json(value: Any) -> None:
+    print(json.dumps(value, ensure_ascii=False, indent=2))
+
+
+def storage_paths() -> dict[str, Any]:
+    return {
+        "config": str(CONFIG_HOME),
+        "config_file": str(CONFIG_FILE),
+        "data": str(DATA_HOME),
+        "state": str(STATE_HOME),
+        "logs": str(LOG_DIR),
+        "captures": str(EVIDENCE),
+        "cache": str(CACHE_HOME),
+        "runtime": str(RUNTIME),
+        "privacy": {
+            "chat": "memory-only; cleared when the daemon exits",
+            "runtime": "volatile; removed by the user session runtime manager",
+            "captures": "written only when observe is requested",
+        },
+    }
+
+
+def load_preferences() -> dict[str, Any]:
+    preferences = dict(DEFAULT_PREFERENCES)
+    if not CONFIG_FILE.exists():
+        return preferences
+    try:
+        raw = tomllib.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise AgentSeatError(f"cannot read AgentSeat configuration {CONFIG_FILE}: {exc}") from exc
+    general = raw.get("general", {})
+    if not isinstance(general, dict):
+        raise AgentSeatError("AgentSeat configuration [general] must be a table")
+    for name in preferences:
+        if name in general:
+            preferences[name] = general[name]
+    workspace = preferences["default_workspace"]
+    grace_ms = preferences["human_priority_grace_ms"]
+    eye_hud = preferences["eye_hud"]
+    if not isinstance(workspace, int) or isinstance(workspace, bool) or workspace < 1:
+        raise AgentSeatError("general.default_workspace must be a positive integer")
+    if not isinstance(grace_ms, int) or isinstance(grace_ms, bool) or not 0 <= grace_ms <= 60_000:
+        raise AgentSeatError("general.human_priority_grace_ms must be an integer from 0 to 60000")
+    if not isinstance(eye_hud, bool):
+        raise AgentSeatError("general.eye_hud must be true or false")
+    return preferences
+
+
+def configuration_status() -> dict[str, Any]:
+    return {
+        "path": str(CONFIG_FILE),
+        "exists": CONFIG_FILE.is_file(),
+        "effective": dict(PREFERENCES),
+    }
+
+
+def ensure_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+
+
+def ensure_runtime_storage() -> None:
+    for path in (RUNTIME, DATA_HOME, STATE_HOME, CACHE_HOME, LOG_DIR, EVIDENCE):
+        ensure_private_directory(path)
+
+
+def open_private_log(path: Path) -> Any:
+    ensure_private_directory(path.parent)
+    stream = path.open("ab", buffering=0)
+    os.chmod(path, 0o600)
+    return stream
+
+
+def version() -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "controller": "agentseat",
+        "version": AGENTSEAT_VERSION,
+        "protocol_version": 1,
+        "daemon": None,
+    }
+    if CONTROL_SOCKET.exists():
+        try:
+            result["daemon"] = rpc("version")
+        except AgentSeatError as exc:
+            result["daemon_error"] = str(exc)
+    return result
+
+
+def instances() -> list[dict[str, Any]]:
+    return json.loads(run(["hyprctl", "instances", "-j"]).stdout)
+
+
+def proc_exe(pid: int) -> str:
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return ""
+
+
+def host_instance() -> dict[str, Any]:
+    candidates = instances()
+    if not candidates:
+        raise AgentSeatError("host Hyprland instance not found")
+    signature = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    return next((item for item in candidates if item["instance"] == signature), candidates[0])
+
+
+def microhost_pid() -> int | None:
+    try:
+        pid = int(MICROHOST_PID.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return pid if proc_exe(pid).removesuffix(" (deleted)") == str(MICROHOST_EXE) else None
+
+
+def eye_pid() -> int | None:
+    try:
+        pid = int(EYE_PID.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return pid if proc_exe(pid).removesuffix(" (deleted)") == str(EYE_BINARY) else None
+
+
+def hypr_json(signature: str, command: str) -> Any:
+    return json.loads(run(["hyprctl", "--instance", signature, command, "-j"]).stdout)
+
+
+def host_client_for_pid(host_signature: str, pid: int) -> dict[str, Any] | None:
+    clients = json.loads(run(["hyprctl", "--instance", host_signature, "clients", "-j"]).stdout)
+    return next((client for client in clients if int(client.get("pid", -1)) == pid), None)
+
+
+def host_snapshot(host: dict[str, Any]) -> dict[str, Any]:
+    signature = str(host["instance"])
+    workspace = hypr_json(signature, "activeworkspace")
+    window = hypr_json(signature, "activewindow")
+    cursor = hypr_json(signature, "cursorpos")
+    return {
+        "workspace": workspace.get("id"),
+        "window": window.get("address"),
+        "title": window.get("title"),
+        "cursor": [cursor.get("x"), cursor.get("y")],
+    }
+
+
+def same_host_focus(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    return all(before.get(key) == after.get(key) for key in ("workspace", "window", "title"))
+
+
+def host_focus_relation(before: dict[str, Any], after: dict[str, Any], outer_window: str) -> str:
+    if same_host_focus(before, after):
+        return "unchanged"
+    if after.get("window") == outer_window:
+        return "outer-focused"
+    return "concurrent-host-change"
+
+
+def launch_window_properties(host_workspace: int, active_workspace: int | None) -> str:
+    if host_workspace <= 0:
+        raise AgentSeatError("host workspace must be a positive integer")
+    properties = [
+        "no_initial_focus true",
+        "focus_on_activate false",
+        "suppress_event activate activatefocus",
+    ]
+    if host_workspace != active_workspace:
+        # Hyprland 0.56 uses snake_case rule effects. This is a one-shot
+        # placement rule, not `workspace N silent`.
+        # It assigns only the new outer window and does not switch the host.
+        properties.insert(0, f"workspace {host_workspace}")
+    return f"[{'; '.join(properties)}]"
+
+
+def select_host_output_scale(
+    workspaces: list[dict[str, Any]],
+    monitors: list[dict[str, Any]],
+    host_workspace: int,
+    active_workspace: int | None,
+) -> float:
+    target = next((item for item in workspaces if int(item.get("id", -1)) == host_workspace), None)
+    target_monitor_id = target.get("monitorID") if target else None
+    target_monitor_name = target.get("monitor") if target else None
+    monitor = next(
+        (
+            item
+            for item in monitors
+            if (target_monitor_id is not None and item.get("id") == target_monitor_id)
+            or (target_monitor_name and item.get("name") == target_monitor_name)
+        ),
+        None,
+    )
+    if monitor is None and active_workspace is not None:
+        monitor = next(
+            (item for item in monitors if item.get("activeWorkspace", {}).get("id") == active_workspace),
+            None,
+        )
+    if monitor is None:
+        monitor = next((item for item in monitors if item.get("focused")), monitors[0] if monitors else None)
+    try:
+        return max(1.0, float(monitor.get("scale", 1.0))) if monitor else 1.0
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def physical_size_for_host(logical_size: int, host_scale: float) -> int:
+    return max(1, math.floor(logical_size * host_scale + 0.5))
+
+
+def load_state() -> dict[str, Any]:
+    if not STATE.exists():
+        return {}
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(value: dict[str, Any]) -> None:
+    ensure_private_directory(RUNTIME)
+    temporary = STATE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    os.chmod(temporary, 0o600)
+    temporary.replace(STATE)
+
+
+def rpc(method: str, params: dict[str, Any] | None = None) -> Any:
+    """Call the resident AgentSeat daemon without spawning an intermediate CLI."""
+    request_id = uuid.uuid4().hex
+    request = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+        "params": params or {},
+    }
+    encoded = (json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+    received = bytearray()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(15)
+            client.connect(str(CONTROL_SOCKET))
+            client.sendall(encoded)
+            while b"\n" not in received:
+                block = client.recv(65_536)
+                if not block:
+                    break
+                received.extend(block)
+                if len(received) > RPC_LIMIT:
+                    raise AgentSeatError("AgentSeat daemon response exceeds 1 MiB")
+    except OSError as exc:
+        raise AgentSeatError(f"cannot reach AgentSeat daemon: {exc}") from exc
+    if not received:
+        raise AgentSeatError("AgentSeat daemon returned no response")
+    try:
+        response = json.loads(bytes(received).split(b"\n", 1)[0])
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AgentSeatError(f"invalid AgentSeat daemon response: {exc}") from exc
+    if response.get("id") != request_id:
+        raise AgentSeatError("AgentSeat daemon response ID mismatch")
+    if "error" in response:
+        error = response["error"]
+        code = error.get("code", "AGENTSEAT_ERROR")
+        message = error.get("message", "AgentSeat daemon rejected the request")
+        raise AgentSeatError(f"{code}: {message}")
+    return response.get("result")
+
+
+def wait_for(predicate: Any, timeout: float, message: str) -> Any:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.1)
+    raise AgentSeatError(message)
+
+
+def agent_daemon_pids() -> list[int]:
+    result: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        if proc_exe(int(entry.name)).removesuffix(" (deleted)") == str(NATIVE_DAEMON):
+            result.append(int(entry.name))
+    return result
+
+
+def normalize_argv(values: list[str]) -> list[str]:
+    argv = list(values)
+    if argv and argv[0] == "--":
+        argv.pop(0)
+    if not argv or any(not value or "\0" in value for value in argv):
+        raise AgentSeatError("run requires a non-empty command after --")
+    return argv
+
+
+def normalized_cwd(value: str | None) -> str | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser().resolve()
+    if not path.is_dir():
+        raise AgentSeatError(f"working directory does not exist: {path}")
+    return str(path)
+
+
+def write_launch_spec(argv: list[str], mode: str, cwd: str | None) -> None:
+    if mode not in {"wayland", "x11"}:
+        raise AgentSeatError(f"unsupported display mode: {mode}")
+    payload = {
+        "version": 1,
+        "argv": argv,
+        "mode": mode,
+        "cwd": cwd,
+    }
+    temporary = LAUNCH_SPEC.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+    os.chmod(temporary, 0o600)
+    temporary.replace(LAUNCH_SPEC)
+
+
+def load_application_env() -> dict[str, str] | None:
+    try:
+        value = json.loads(APPLICATION_ENV.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    wayland_display = value.get("wayland_display")
+    if not isinstance(wayland_display, str) or not wayland_display:
+        return None
+    display = value.get("display")
+    return {
+        "wayland_display": wayland_display,
+        "display": display if isinstance(display, str) else "",
+    }
+
+
+def legacy_command(preset: str) -> tuple[list[str], str, str | None]:
+    if preset == "onlyoffice":
+        return ["/usr/bin/onlyoffice-desktopeditors"], "wayland", "onlyoffice-native-wayland"
+    raise AgentSeatError(f"unknown legacy preset: {preset}")
+
+
+def sync_window_tree(*, focus_newest: bool = True) -> list[dict[str, Any]]:
+    """Lazily include every mapped window in the wrapped app's private workspace."""
+    windows = rpc("window.list")
+    added: list[dict[str, Any]] = []
+    for window in windows:
+        if window.get("leased"):
+            continue
+        rpc("window.lease", {"window_id": str(window["id"])})
+        added.append(window)
+    if focus_newest and added:
+        rpc("window.focus", {"window_id": str(added[-1]["id"])})
+    return rpc("window.list") if added else windows
+
+
+def start_application(
+    argv: list[str],
+    *,
+    mode: str,
+    cwd: str | None,
+    host_workspace: int = 1,
+    legacy_preset: str | None = None,
+    compat_type: str | None = None,
+) -> dict[str, Any]:
+    existing = microhost_pid()
+    if existing and CONTROL_SOCKET.exists():
+        current = load_state()
+        current_argv = current.get("launch", {}).get("argv")
+        if legacy_preset and current.get("preset") == legacy_preset:
+            return status()
+        if current_argv == argv:
+            return status()
+        raise AgentSeatError("AgentSeat is already running another application; stop it before launching a different command")
+    if existing:
+        raise AgentSeatError("an unmanaged AgentSeat micro-host is already running; run agentseat stop first")
+
+    host = host_instance()
+    before = host_snapshot(host)
+    signature = str(host["instance"])
+    host_scale = select_host_output_scale(
+        hypr_json(signature, "workspaces"),
+        hypr_json(signature, "monitors"),
+        host_workspace,
+        before.get("workspace"),
+    )
+    launch_properties = launch_window_properties(host_workspace, before.get("workspace"))
+    ensure_runtime_storage()
+    for stale in (MICROHOST_PID, EYE_PID, APPLICATION_ENV, MICROHOST_READY):
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
+    write_launch_spec(argv, mode, cwd)
+    run([
+        "hyprctl", "--instance", str(host["instance"]), "dispatch", "exec",
+        f"{launch_properties} env AGENTSEAT_HOST_SCALE={host_scale:.6g} AGENTSEAT_PHYSICAL_LAYOUT=1 {RUN_MICROHOST}",
+    ])
+    microhost = wait_for(microhost_pid, 12, "AgentSeat micro-host did not appear")
+    outer = wait_for(
+        lambda: host_client_for_pid(str(host["instance"]), int(microhost)),
+        8,
+        "outer AgentSeat window did not appear",
+    )
+    if int(outer.get("workspace", {}).get("id", -1)) != host_workspace:
+        raise AgentSeatError(f"AgentSeat outer window did not map on requested workspace {host_workspace}")
+    if not NATIVE_DAEMON.is_file() or not os.access(NATIVE_DAEMON, os.X_OK):
+        raise AgentSeatError(f"native AgentSeat daemon is missing or not executable: {NATIVE_DAEMON}")
+    if not GRIM.is_file() or not os.access(GRIM, os.X_OK):
+        raise AgentSeatError(f"native wlr-screencopy client is missing or not executable: {GRIM}")
+    app_environment = wait_for(load_application_env, 8, "AgentSeat application environment receipt did not appear")
+    wait_for(MICROHOST_READY.exists, 12, "application did not map in the AgentSeat micro-host")
+    daemon_log = open_private_log(LOG_DIR / "daemon.log")
+    env = dict(os.environ)
+    env.update({
+        "XDG_RUNTIME_DIR": str(USER_RUNTIME_DIR),
+        "WAYLAND_DISPLAY": app_environment["wayland_display"],
+    })
+    daemon_argv = [
+        str(NATIVE_DAEMON),
+        "--socket", str(CONTROL_SOCKET),
+        "--activity-socket", str(ACTIVITY_SOCKET),
+        "--human-grace-ms", str(PREFERENCES["human_priority_grace_ms"]),
+        "--workspace", str(host_workspace),
+        "--seat-id", "agent:agentseat",
+        "--seat-name", "AgentSeat Agent",
+        "--app-id", Path(argv[0]).name,
+        "--window-title", Path(argv[0]).name,
+        "--width", str(int(outer.get("size", [1280, 720])[0])),
+        "--height", str(int(outer.get("size", [1280, 720])[1])),
+    ]
+    if mode == "x11":
+        daemon_argv.append("--xwayland")
+    daemon = subprocess.Popen(
+        daemon_argv,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=daemon_log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    wait_for(CONTROL_SOCKET.exists, 8, "AgentSeat daemon socket did not appear")
+    rpc("seat.create", {"workspace": host_workspace})
+    windows = wait_for(lambda: rpc("window.list") or None, 8, "application window did not appear")
+    window = windows[0]
+    rpc("window.lease", {"window_id": str(window["id"])})
+    rpc("window.focus", {"window_id": str(window["id"])})
+
+    after = host_snapshot(host)
+    relation = host_focus_relation(before, after, str(outer["address"]))
+    restored_outer_focus = False
+    if relation == "outer-focused" and before.get("window"):
+        run([
+            "hyprctl", "--instance", str(host["instance"]), "dispatch", "focuswindow",
+            f"address:{before['window']}",
+        ], check=False)
+        restored_outer_focus = True
+        after = host_snapshot(host)
+    if relation == "outer-focused" and not same_host_focus(before, after):
+        raise AgentSeatError(f"host focus isolation failed: before={before!r} after={after!r}")
+    state_value = {
+        "launch": {"argv": argv, "mode": mode, "cwd": cwd},
+        "host_instance": host["instance"],
+        "backend": "cage-microhost",
+        "microhost_pid": microhost,
+        "outer_window": outer["address"],
+        "host_workspace": host_workspace,
+        "host_output_scale": host_scale,
+        "buffer_scale": 1,
+        "render_scale": 1,
+        "physical_pixel_layout": True,
+        "viewport_logical_size": list(outer.get("size", [1280, 720])),
+        "physical_buffer_size": [
+            physical_size_for_host(int(outer.get("size", [1280, 720])[0]), host_scale),
+            physical_size_for_host(int(outer.get("size", [1280, 720])[1]), host_scale),
+        ],
+        "wayland_display": app_environment["wayland_display"],
+        "x_display": app_environment["display"],
+        "daemon_pid": daemon.pid,
+        "window_id": str(window["id"]),
+        "host_snapshot": before,
+        "host_launch_receipt": {
+            "before": before,
+            "after": after,
+            "relation": relation,
+            "restored_outer_focus": restored_outer_focus,
+        },
+    }
+    if legacy_preset:
+        state_value["preset"] = legacy_preset
+    if compat_type:
+        state_value["compat_type"] = compat_type
+    save_state(state_value)
+    hud = start_hud() if PREFERENCES["eye_hud"] else {"running": False, "disabled_by_config": True}
+    state_value["eye_hud"] = hud
+    save_state(state_value)
+    return status()
+
+
+def start_safely(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    try:
+        return start_application(*args, **kwargs)
+    except Exception:
+        try:
+            stop()
+        except Exception:
+            pass
+        raise
+
+
+def status() -> dict[str, Any]:
+    state_value = load_state()
+    microhost = microhost_pid()
+    live = bool(microhost and CONTROL_SOCKET.exists())
+    result: dict[str, Any] = {"protocol_version": 1, "running": live, "state": state_value}
+    result["eye_hud"] = {
+        "running": eye_pid() is not None,
+        "pid": eye_pid(),
+        "enabled_by_config": bool(PREFERENCES["eye_hud"]),
+        "scope": "private-microhost",
+        "default_corner": "bottom-right",
+    }
+    if live:
+        windows = sync_window_tree()
+        result["seat"] = rpc("seat.status")
+        result["windows"] = windows
+        host = host_instance()
+        result["host_now"] = host_snapshot(host)
+        matches_start = same_host_focus(state_value.get("host_snapshot", {}), result["host_now"])
+        result["host_matches_start_snapshot"] = matches_start
+        result["host_focus_unchanged"] = matches_start
+    return result
+
+
+def start_hud() -> dict[str, Any]:
+    existing = eye_pid()
+    if existing:
+        return {"running": True, "pid": existing, "connected": CONTROL_SOCKET.exists()}
+    if not EYE_BINARY.is_file() or not os.access(EYE_BINARY, os.X_OK):
+        raise AgentSeatError(f"native AgentSeat eye HUD is missing or not executable: {EYE_BINARY}")
+    state_value = load_state()
+    if not microhost_pid() or not CONTROL_SOCKET.exists():
+        raise AgentSeatError("AgentSeat must be running before its embedded AI head can start")
+    wayland_display = state_value.get("wayland_display")
+    if not isinstance(wayland_display, str) or not wayland_display:
+        application_env = load_application_env()
+        wayland_display = application_env["wayland_display"] if application_env else None
+    if not wayland_display:
+        raise AgentSeatError("AgentSeat private Wayland display is unavailable")
+    environment = dict(os.environ)
+    environment.update({
+        "XDG_RUNTIME_DIR": str(USER_RUNTIME_DIR),
+        "WAYLAND_DISPLAY": wayland_display,
+        "GDK_BACKEND": "wayland",
+        # The HUD is vector text plus one tiny Cairo head. Inheriting the host's
+        # GL renderer loads a full software-GL stack inside the pixman
+        # micro-host for no visual benefit.
+        "GSK_RENDERER": "cairo",
+    })
+    environment.pop("DISPLAY", None)
+    environment.pop("HYPRLAND_INSTANCE_SIGNATURE", None)
+    eye_log = open_private_log(LOG_DIR / "eye.log")
+    eye = subprocess.Popen(
+        [str(EYE_BINARY), "--socket", str(CONTROL_SOCKET), "--embedded"],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=eye_log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    EYE_PID.write_text(f"{eye.pid}\n", encoding="utf-8")
+    os.chmod(EYE_PID, 0o600)
+    time.sleep(0.35)
+    if eye.poll() is not None:
+        raise AgentSeatError(f"AgentSeat eye HUD exited during startup; inspect {LOG_DIR / 'eye.log'}")
+    return {
+        "running": True,
+        "pid": eye.pid,
+        "connected": CONTROL_SOCKET.exists(),
+        "enabled_by_config": bool(PREFERENCES["eye_hud"]),
+        "scope": "private-microhost",
+        "default_corner": "bottom-right",
+    }
+
+
+def stop_hud() -> dict[str, Any]:
+    hud_pid = eye_pid()
+    if hud_pid:
+        try:
+            os.kill(hud_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        wait_for(lambda: eye_pid() is None, 5, "AgentSeat eye HUD did not stop")
+    try:
+        EYE_PID.unlink()
+    except FileNotFoundError:
+        pass
+    return {"running": False}
+
+
+def stop() -> dict[str, Any]:
+    state_value = load_state()
+    stop_hud()
+    daemon_pids = set(agent_daemon_pids())
+    if state_value.get("daemon_pid"):
+        daemon_pids.add(int(state_value["daemon_pid"]))
+    if CONTROL_SOCKET.exists():
+        try:
+            rpc("shutdown")
+        except AgentSeatError:
+            pass
+    if daemon_pids:
+        wait_for(lambda: all(not Path(f"/proc/{pid}").exists() for pid in daemon_pids), 5, "daemon did not stop")
+    for socket_path in (CONTROL_SOCKET, ACTIVITY_SOCKET):
+        if socket_path.exists():
+            socket_stat = socket_path.lstat()
+            if not stat.S_ISSOCK(socket_stat.st_mode) or socket_stat.st_uid != os.getuid():
+                raise AgentSeatError(f"refusing to remove an unexpected AgentSeat socket: {socket_path}")
+            socket_path.unlink()
+    microhost = microhost_pid()
+    if microhost:
+        try:
+            os.kill(microhost, 15)
+        except ProcessLookupError:
+            pass
+        wait_for(lambda: microhost_pid() is None, 8, "AgentSeat micro-host did not stop")
+    try:
+        STATE.unlink()
+    except FileNotFoundError:
+        pass
+    for transient in (LAUNCH_SPEC, APPLICATION_ENV, MICROHOST_PID, MICROHOST_READY, EYE_PID):
+        try:
+            transient.unlink()
+        except FileNotFoundError:
+            pass
+    return {"stopped": True}
+
+
+def pointer_click(button: int) -> list[Any]:
+    sync_window_tree()
+    params = {"button": button, "pressed": True}
+    pressed = rpc("pointer.button", params)
+    params["pressed"] = False
+    released = rpc("pointer.button", params)
+    return [pressed, released]
+
+
+def pointer_move(x: float, y: float) -> Any:
+    sync_window_tree()
+    return rpc("pointer.move_absolute", {"x": x, "y": y})
+
+
+def pointer_scroll(axis: str, value120: int) -> Any:
+    return rpc("pointer.scroll", {"axis": axis, "value120": value120})
+
+
+def keyboard_key(keycode: int, pressed: bool) -> Any:
+    sync_window_tree()
+    return rpc("keyboard.key", {"keycode": keycode, "pressed": pressed})
+
+
+def onlyoffice_paste(text: str) -> dict[str, Any]:
+    state_value = load_state()
+    display = state_value.get("x_display")
+    if not display:
+        raise AgentSeatError("private X display is unavailable")
+    seat = rpc("seat.status")["seat"]
+    x = float(seat["pointer_x"])
+    y = float(seat["pointer_y"])
+    windows = rpc("window.list")
+    focused_id = str(seat.get("focused_window"))
+    window = next((item for item in windows if str(item["id"]) == focused_id), windows[0] if windows else None)
+    if not window:
+        raise AgentSeatError("no OnlyOffice window is available")
+    encoded = base64.b64encode(text.encode()).decode()
+    owner = subprocess.Popen(
+        [str(CLIPBOARD_OWNER), "--display", str(display), encoded],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        ready = owner.stdout.readline().strip() if owner.stdout else ""
+        if ready != "READY":
+            error = owner.stderr.read().strip() if owner.stderr else ""
+            raise AgentSeatError(error or "private X clipboard owner failed")
+        pointer_click(273)
+        time.sleep(0.6)
+        xenv = {**os.environ, "DISPLAY": str(display)}
+        active = run(["xdotool", "getactivewindow"], env=xenv).stdout.strip()
+        geometry = {}
+        for line in run(["xdotool", "getwindowgeometry", "--shell", active], env=xenv).stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if separator and key in {"X", "Y", "WIDTH", "HEIGHT"}:
+                geometry[key] = int(value)
+        menu_image = RUNTIME / "onlyoffice-context-menu.png"
+        run(["import", "-window", active, str(menu_image)], env=xenv)
+        tsv = run(["tesseract", str(menu_image), "stdout", "--psm", "11", "tsv"]).stdout
+        paste_word: dict[str, str] | None = None
+        for row in csv.DictReader(tsv.splitlines(), delimiter="\t"):
+            if row.get("text", "").strip().casefold() == "paste":
+                paste_word = row
+                break
+        if not paste_word:
+            raise AgentSeatError("OnlyOffice Paste menu item was not visually detected")
+        paste_x = (
+            geometry.get("X", 0) + int(paste_word["left"]) + int(paste_word["width"]) / 2.0
+        ) / float(window["width"])
+        paste_y = (
+            geometry.get("Y", 0) + int(paste_word["top"]) + int(paste_word["height"]) / 2.0
+        ) / float(window["height"])
+        pointer_move(paste_x, paste_y)
+        pointer_click(272)
+        # OnlyOffice requests the X11 clipboard asynchronously after the menu
+        # click. Keep the private owner alive until that transfer completes.
+        time.sleep(3.0)
+        pointer_move(x, y)
+    finally:
+        owner.terminate()
+        try:
+            owner.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            owner.terminate()
+    return {"typed": len(text), "lane": "onlyoffice-private-x11-clipboard", "pointer_restored": [x, y]}
+
+
+def private_unicode_paste(text: str) -> dict[str, Any]:
+    """Paste through the micro-host clipboard without exposing host clipboard state."""
+    state_value = load_state()
+    wayland_display = state_value.get("wayland_display")
+    if not isinstance(wayland_display, str) or not wayland_display:
+        raise AgentSeatError("private Wayland display is unavailable")
+    for helper in (WL_COPY, WL_PASTE):
+        if not helper.is_file() or not os.access(helper, os.X_OK):
+            raise AgentSeatError(f"private Unicode clipboard helper is unavailable: {helper}")
+
+    environment = dict(os.environ)
+    environment["XDG_RUNTIME_DIR"] = str(USER_RUNTIME_DIR)
+    environment["WAYLAND_DISPLAY"] = wayland_display
+    environment.pop("DISPLAY", None)
+    owner = subprocess.Popen(
+        [str(WL_COPY), "--foreground", "--paste-once", "--type", "text/plain;charset=utf-8"],
+        env=environment,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        if owner.stdin is None:
+            raise AgentSeatError("private clipboard input pipe is unavailable")
+        owner.stdin.write(text)
+        owner.stdin.close()
+
+        def clipboard_ready() -> bool:
+            if owner.poll() is not None:
+                return False
+            probe = run([str(WL_PASTE), "--list-types"], env=environment, check=False)
+            return probe.returncode == 0 and "text/plain" in probe.stdout
+
+        wait_for(clipboard_ready, 2, "private AgentSeat clipboard did not become ready")
+        # evdev KEY_LEFTCTRL=29 and KEY_V=47. These events are delivered only
+        # through the micro-host virtual keyboard, never through the host seat.
+        rpc("keyboard.key", {"keycode": 29, "pressed": True})
+        rpc("keyboard.key", {"keycode": 47, "pressed": True})
+        rpc("keyboard.key", {"keycode": 47, "pressed": False})
+        rpc("keyboard.key", {"keycode": 29, "pressed": False})
+        try:
+            returncode = owner.wait(timeout=3)
+        except subprocess.TimeoutExpired as exc:
+            raise AgentSeatError("application did not request the private AgentSeat clipboard") from exc
+        if returncode != 0:
+            error = owner.stderr.read().strip() if owner.stderr else ""
+            raise AgentSeatError(error or "private AgentSeat clipboard transfer failed")
+    finally:
+        for keycode in (47, 29):
+            try:
+                rpc("keyboard.key", {"keycode": keycode, "pressed": False})
+            except AgentSeatError:
+                pass
+        if owner.poll() is None:
+            owner.terminate()
+            try:
+                owner.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                owner.kill()
+                owner.wait(timeout=1)
+    return {"typed": len(text), "lane": "private-wayland-clipboard", "host_clipboard": "untouched"}
+
+
+def safe_capture_path(path: Path) -> Path:
+    candidate = path.expanduser()
+    if not candidate.is_absolute() or candidate.suffix.casefold() != ".png":
+        raise AgentSeatError("capture output must be an absolute .png path")
+    try:
+        parent = candidate.parent.resolve(strict=True)
+    except OSError as exc:
+        raise AgentSeatError(f"capture output parent is unavailable: {exc}") from exc
+    if not parent.is_dir() or parent.stat().st_uid != os.getuid():
+        raise AgentSeatError("capture output parent must be a directory owned by the current user")
+    output = parent / candidate.name
+    if output.is_symlink():
+        raise AgentSeatError("capture output cannot be a symbolic link")
+    if output.exists() and (not output.is_file() or output.stat().st_uid != os.getuid()):
+        raise AgentSeatError("existing capture output must be a regular file owned by the current user")
+    return output
+
+
+def observe(path: str | None) -> dict[str, Any]:
+    state_value = load_state()
+    windows = sync_window_tree()
+    seat_status = rpc("seat.status")
+    focused_id = str(seat_status["seat"].get("focused_window") or state_value.get("window_id") or "")
+    window = next((item for item in windows if str(item["id"]) == focused_id), windows[0] if windows else None)
+    if not window:
+        raise AgentSeatError("no leased application window is available")
+    ensure_private_directory(EVIDENCE)
+    output = safe_capture_path(Path(path) if path else EVIDENCE / f"agentseat-{int(time.time())}.png")
+    temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp.png")
+    capture_env = {
+        **os.environ,
+        "XDG_RUNTIME_DIR": str(USER_RUNTIME_DIR),
+        "WAYLAND_DISPLAY": str(state_value["wayland_display"]),
+    }
+
+    def capture_pass() -> None:
+        host_pid = microhost_pid()
+        if not host_pid:
+            raise AgentSeatError("AgentSeat micro-host exited before capture")
+        process = subprocess.Popen(
+            [str(GRIM), "-t", "png", str(temporary)],
+            env=capture_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            time.sleep(0.03)
+            os.kill(host_pid, signal.SIGUSR1)
+            stdout, stderr = process.communicate(timeout=5)
+        except (ProcessLookupError, subprocess.TimeoutExpired) as exc:
+            process.terminate()
+            process.communicate(timeout=2)
+            raise AgentSeatError(f"micro-host screencopy did not complete: {exc}") from exc
+        if process.returncode:
+            raise AgentSeatError(stderr.strip() or stdout.strip() or "native wlr-screencopy failed")
+
+    try:
+        # An inactive host workspace can throttle the nested client's frame
+        # callbacks. Drive enough private output frames to settle the HUD's
+        # 210 ms reveal before retaining the final application capture.
+        for pass_index in range(4):
+            capture_pass()
+            if pass_index < 3:
+                time.sleep(0.08)
+        temporary.replace(output)
+        os.chmod(output, 0o600)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return {
+        "path": str(output),
+        "backend": "wlr-screencopy",
+        "window": window,
+        "capture": {"backend": "native-wlr-screencopy", "scope": "single-app-output"},
+        "capture_passes": 4,
+        "settle_ms": 240,
+    }
+
+
+def collaboration_status() -> dict[str, Any]:
+    return rpc("collaboration.status")
+
+
+def set_activity(summary: str, detail: str) -> dict[str, Any]:
+    return rpc("activity.set", {"summary": summary, "detail": detail})
+
+
+def list_messages(after_id: int) -> dict[str, Any]:
+    return rpc("chat.list", {"after_id": after_id})
+
+
+def reply_message(text: str) -> dict[str, Any]:
+    return rpc("chat.reply", {"text": text})
+
+
+def main() -> int:
+    global PREFERENCES
+    PREFERENCES = load_preferences()
+    parser = argparse.ArgumentParser(prog="agentseat")
+    commands = parser.add_subparsers(dest="command", required=True)
+    start_parser = commands.add_parser("start", help="start a legacy verified demo")
+    start_parser.add_argument("preset", choices=("onlyoffice",), nargs="?", default="onlyoffice")
+    start_parser.add_argument("--host-workspace", type=int, default=PREFERENCES["default_workspace"])
+    run_parser = commands.add_parser("run", help="wrap an arbitrary application command")
+    run_parser.add_argument("--x11", action="store_true", help="force the generic private-XWayland compatibility lane")
+    run_parser.add_argument("--cwd")
+    run_parser.add_argument("--host-workspace", type=int, default=PREFERENCES["default_workspace"])
+    run_parser.add_argument("argv", nargs=argparse.REMAINDER)
+    commands.add_parser("version")
+    commands.add_parser("paths", help="show AgentSeat's XDG storage locations")
+    commands.add_parser("config", help="show the effective AgentSeat configuration")
+    commands.add_parser("status")
+    hud_parser = commands.add_parser("hud", help="control the embedded private-microhost AI head")
+    hud_parser.add_argument("action", choices=("start", "stop", "status"))
+    commands.add_parser("collaboration", help="show human-priority and AI activity state")
+    activity_parser = commands.add_parser("activity", help="publish the Agent's current AgentSeat action")
+    activity_parser.add_argument("summary")
+    activity_parser.add_argument("--detail", default="")
+    messages_parser = commands.add_parser("messages", help="read messages sent from the eye HUD")
+    messages_parser.add_argument("--after", type=int, default=0)
+    reply_parser = commands.add_parser("reply", help="reply to the human in the eye HUD")
+    reply_parser.add_argument("text")
+    commands.add_parser("windows")
+    commands.add_parser("pause")
+    commands.add_parser("resume")
+    move_parser = commands.add_parser("move")
+    move_parser.add_argument("x", type=float)
+    move_parser.add_argument("y", type=float)
+    click_parser = commands.add_parser("click")
+    click_parser.add_argument("button", type=int, nargs="?", default=272)
+    scroll_parser = commands.add_parser("scroll")
+    scroll_parser.add_argument("axis", choices=("vertical", "horizontal"))
+    scroll_parser.add_argument("value120", type=int)
+    key_parser = commands.add_parser("key", help="send one scoped evdev key event")
+    key_parser.add_argument("keycode", type=int)
+    key_parser.add_argument("state", choices=("down", "up"))
+    type_parser = commands.add_parser("type")
+    type_parser.add_argument("text")
+    observe_parser = commands.add_parser("observe")
+    observe_parser.add_argument("path", nargs="?")
+    commands.add_parser("stop")
+    args = parser.parse_args()
+
+    if args.command == "start":
+        argv, mode, compat_type = legacy_command(args.preset)
+        result = start_safely(
+            argv,
+            mode=mode,
+            cwd=None,
+            host_workspace=args.host_workspace,
+            legacy_preset=args.preset,
+            compat_type=compat_type,
+        )
+    elif args.command == "run":
+        result = start_safely(
+            normalize_argv(args.argv),
+            mode="x11" if args.x11 else "wayland",
+            cwd=normalized_cwd(args.cwd),
+            host_workspace=args.host_workspace,
+        )
+    elif args.command == "version":
+        result = version()
+    elif args.command == "paths":
+        result = storage_paths()
+    elif args.command == "config":
+        result = configuration_status()
+    elif args.command == "status":
+        result = status()
+    elif args.command == "hud":
+        if args.action == "start":
+            result = start_hud()
+        elif args.action == "stop":
+            result = stop_hud()
+        else:
+            result = {
+                "running": eye_pid() is not None,
+                "pid": eye_pid(),
+                "connected": CONTROL_SOCKET.exists(),
+                "enabled_by_config": bool(PREFERENCES["eye_hud"]),
+                "scope": "private-microhost",
+                "default_corner": "bottom-right",
+            }
+    elif args.command == "collaboration":
+        result = collaboration_status()
+    elif args.command == "activity":
+        result = set_activity(args.summary, args.detail)
+    elif args.command == "messages":
+        result = list_messages(args.after)
+    elif args.command == "reply":
+        result = reply_message(args.text)
+    elif args.command == "windows":
+        result = sync_window_tree()
+    elif args.command == "pause":
+        result = rpc("seat.pause")
+    elif args.command == "resume":
+        result = rpc("seat.resume")
+    elif args.command == "move":
+        result = pointer_move(args.x, args.y)
+    elif args.command == "click":
+        result = pointer_click(args.button)
+    elif args.command == "scroll":
+        sync_window_tree()
+        result = pointer_scroll(args.axis, args.value120)
+    elif args.command == "key":
+        result = keyboard_key(args.keycode, args.state == "down")
+    elif args.command == "type":
+        state_value = load_state()
+        sync_window_tree()
+        legacy_onlyoffice = state_value.get("compat_type") == "onlyoffice-private-x11-clipboard" or (
+            "launch" not in state_value and state_value.get("preset") == "onlyoffice"
+        )
+        if legacy_onlyoffice:
+            result = onlyoffice_paste(args.text)
+        else:
+            try:
+                result = rpc("keyboard.type", {"text": args.text})
+            except AgentSeatError as exc:
+                if not str(exc).startswith("UNSUPPORTED_CHARACTER:"):
+                    raise
+                result = private_unicode_paste(args.text)
+    elif args.command == "observe":
+        result = observe(args.path)
+    elif args.command == "stop":
+        result = stop()
+    else:
+        raise AgentSeatError("unknown command")
+    output_json(result)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except AgentSeatError as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(1)

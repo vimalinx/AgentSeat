@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Exec one application from the short-lived AgentSeat launch specification."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+AGENTSEAT_ROOT = Path(os.environ.get("AGENTSEAT_ROOT", Path(__file__).resolve().parents[1])).resolve()
+USER_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+AGENTSEAT_RUNTIME = Path(os.environ.get("AGENTSEAT_RUNTIME_DIR", USER_RUNTIME_DIR / "agentseat")).expanduser().resolve()
+DEFAULT_SPEC = AGENTSEAT_RUNTIME / "launch.json"
+DEFAULT_ENV_RECEIPT = AGENTSEAT_RUNTIME / "application-env.json"
+
+
+def load_spec(path: Path) -> dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+        spec = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot read launch specification {path}: {exc}") from exc
+    finally:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    if not isinstance(spec, dict) or spec.get("version") != 1:
+        raise RuntimeError("unsupported AgentSeat launch specification")
+    argv = spec.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(value, str) and value for value in argv):
+        raise RuntimeError("launch argv must be a non-empty string array")
+    if spec.get("mode") not in {"wayland", "x11"}:
+        raise RuntimeError("launch mode must be wayland or x11")
+    return spec
+
+
+def launch(spec: dict[str, Any]) -> None:
+    argv = spec["argv"]
+    environment = dict(os.environ)
+    inner_wayland_display = environment.get("WAYLAND_DISPLAY")
+    # The host IME socket belongs to the host seat. Keep Agent input on direct
+    # toolkit key events inside the micro-host instead of queueing against an
+    # unreachable host IBus connection.
+    environment.update({"GTK_IM_MODULE": "gtk-im-context-simple", "QT_IM_MODULE": "", "XMODIFIERS": "@im=none"})
+    x_display = spec.get("x_display")
+    if isinstance(x_display, str) and x_display:
+        environment["DISPLAY"] = x_display
+    if spec["mode"] == "x11":
+        environment.pop("WAYLAND_DISPLAY", None)
+        environment.update(
+            {
+                "GDK_BACKEND": "x11",
+                "QT_QPA_PLATFORM": "xcb",
+                "SDL_VIDEODRIVER": "x11",
+                "OZONE_PLATFORM": "x11",
+                "XDG_SESSION_TYPE": "x11",
+            }
+        )
+        if environment.get("AGENTSEAT_PHYSICAL_LAYOUT") == "1":
+            try:
+                host_scale = float(environment.get("AGENTSEAT_HOST_SCALE", "1"))
+            except ValueError:
+                host_scale = 1.0
+            if 1.0 <= host_scale <= 4.0:
+                scale = f"{host_scale:.6g}"
+                # XWayland now exposes the real physical pixel grid. Ask the
+                # common X11 toolkits to keep widgets at the host's logical
+                # size while retaining physical-pixel text and icon detail.
+                environment.update(
+                    {
+                        "QT_AUTO_SCREEN_SCALE_FACTOR": "0",
+                        "QT_SCALE_FACTOR": scale,
+                        "GDK_SCALE": "1",
+                        "GDK_DPI_SCALE": scale,
+                    }
+                )
+        if environment.get("AGENTSEAT_SKIP_X11_READY") != "1":
+            deadline = time.monotonic() + 8
+            while True:
+                probe = subprocess.run(
+                    ["/usr/bin/xdpyinfo"],
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                if probe.returncode == 0:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("private XWayland did not become ready")
+                time.sleep(0.05)
+    else:
+        environment.update(
+            {
+                "GDK_BACKEND": "wayland",
+                "QT_QPA_PLATFORM": "wayland",
+                "SDL_VIDEODRIVER": "wayland",
+                "OZONE_PLATFORM": "wayland",
+                "XDG_SESSION_TYPE": "wayland",
+            }
+        )
+        if environment.get("AGENTSEAT_PHYSICAL_LAYOUT") == "1":
+            # Host-session scale overrides describe the host compositor's
+            # logical output. They must not be inherited by a client that is
+            # already receiving AgentSeat's physical pixel grid; applications
+            # with an internal UI scale can then apply it without Qt shrinking
+            # their surface a second time.
+            for name in (
+                "QT_SCALE_FACTOR",
+                "QT_SCREEN_SCALE_FACTORS",
+                "QT_DEVICE_PIXEL_RATIO",
+                "QT_AUTO_SCREEN_SCALE_FACTOR",
+                "GDK_SCALE",
+                "GDK_DPI_SCALE",
+            ):
+                environment.pop(name, None)
+            try:
+                host_scale = float(environment.get("AGENTSEAT_HOST_SCALE", "1"))
+            except ValueError:
+                host_scale = 1.0
+            if 1.0 <= host_scale <= 4.0:
+                environment["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+                environment["QT_FONT_DPI"] = str(round(96 * host_scale))
+    receipt_path = Path(os.environ.get("AGENTSEAT_ENV_RECEIPT", DEFAULT_ENV_RECEIPT))
+    receipt_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    receipt = {
+        "wayland_display": inner_wayland_display,
+        "display": environment.get("DISPLAY"),
+    }
+    temporary = receipt_path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(receipt, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    temporary.replace(receipt_path)
+    cwd = spec.get("cwd")
+    if cwd is not None:
+        if not isinstance(cwd, str):
+            raise RuntimeError("launch cwd must be a string or null")
+        os.chdir(cwd)
+    os.execvpe(argv[0], argv, environment)
+
+
+def main() -> int:
+    spec_path = Path(os.environ.get("AGENTSEAT_LAUNCH_SPEC", DEFAULT_SPEC))
+    launch(load_spec(spec_path))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError) as exc:
+        print(f"agentseat launch failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)

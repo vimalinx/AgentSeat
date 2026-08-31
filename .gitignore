@@ -1,0 +1,13 @@
+/build/
+/**/build/
+/bin/agentseatd
+/bin/agentseat-eye
+/bin/agentseat-microhost
+/runtime/
+/evidence/
+/.pytest_cache/
+/.ruff_cache/
+/**/__pycache__/
+*.py[cod]
+*.log
+*.png

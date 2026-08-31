@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Hold UTF-8 text on one private X server until stdin closes."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import os
+import tkinter as tk
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--display", required=True)
+    parser.add_argument("text_base64")
+    args = parser.parse_args()
+
+    os.environ["DISPLAY"] = args.display
+    text = base64.b64decode(args.text_base64).decode("utf-8")
+    root = tk.Tk()
+    root.withdraw()
+    root.clipboard_clear()
+    root.clipboard_append(text)
+    root.update()
+    print("READY", flush=True)
+
+    root.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
