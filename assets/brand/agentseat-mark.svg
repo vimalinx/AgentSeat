@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">AgentSeat logo</title>
+  <desc id="desc">A friendly black AI head with two white eyes, held by a thin ice-blue open arc.</desc>
+  <path d="M183.5 33.5A104 104 0 1 0 220 176" fill="none" stroke="#A9DCF7" stroke-linecap="round" stroke-width="7"/>
+  <path d="M132 43c-49.7-1.2-84.4 29.4-89.4 76.8-5.7 53.4 28.9 92.3 82.1 96.6 57.4 4.6 94.4-28.8 95.2-82.1.8-49.1-35.1-90.1-87.9-91.3Z" fill="#080C11"/>
+  <rect width="18" height="43" x="115" y="76" rx="9" fill="#FFF" transform="rotate(-17 124 97.5)"/>
+  <rect width="17" height="39" x="154" y="69" rx="8.5" fill="#FFF" transform="rotate(-13 162.5 88.5)"/>
+</svg>

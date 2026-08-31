@@ -11,3 +11,4 @@
 *.py[cod]
 *.log
 *.png
+!/assets/brand/*.png

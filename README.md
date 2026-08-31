@@ -1,11 +1,34 @@
-# AgentSeat
+<p align="center">
+  <img src="assets/brand/agentseat-hero.svg" alt="AgentSeat — one app, two operators" width="100%">
+</p>
 
-AgentSeat lets a human and an AI Agent operate one normal local GUI application
-at the same time. The Agent gets a private virtual pointer and keyboard inside
-the application boundary; the human keeps the real host pointer, keyboard,
-focus, workspace, and clipboard.
+<h1 align="center">AgentSeat</h1>
 
-It is deliberately small:
+<p align="center">
+  <strong>A private seat for an AI Agent inside one local application.</strong><br>
+  The Agent gets its own pointer and keyboard. You keep yours.
+</p>
+
+<p align="center">
+  <a href="https://github.com/vimalinx/AgentSeat/releases/latest"><img alt="GitHub release" src="https://img.shields.io/github/v/release/vimalinx/AgentSeat?style=flat-square&amp;color=57b8ed"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-080c11?style=flat-square"></a>
+  <img alt="Wayland native" src="https://img.shields.io/badge/Wayland-native-a9dcf7?style=flat-square&amp;labelColor=080c11">
+  <img alt="Hyprland host" src="https://img.shields.io/badge/Hyprland-host-a9dcf7?style=flat-square&amp;labelColor=080c11">
+</p>
+
+AgentSeat lets a human and an AI Agent operate the same normal GUI application
+at the same time. It creates a narrow application boundary around the Agent's
+virtual input and observation—not another desktop around the user.
+
+| Human keeps | Agent receives | Boundary guarantees |
+| --- | --- | --- |
+| Real pointer and keyboard | Private virtual pointer and keyboard | No host pointer movement |
+| Host focus and workspace | App-scoped focus | No workspace switching |
+| Host clipboard | Private one-shot Unicode paste | No host clipboard replacement |
+
+## Small by design
+
+The runtime is deliberately small:
 
 - one ordinary Hyprland window on the host;
 - one reduced single-application wlroots micro-host;

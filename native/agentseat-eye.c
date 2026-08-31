@@ -154,9 +154,10 @@ static void draw_eye(GtkDrawingArea* area, cairo_t* cr, int width, int height, g
     const double cy = height / 2.0;
     const double outer = size * 0.475;
 
-    cairo_arc(cr, cx, cy, outer - 0.7, 0, 2 * G_PI);
+    /* The open arc is the Agent's bounded seat, not a second desktop shell. */
+    cairo_arc(cr, cx, cy, outer - 0.7, 0.47, (2 * G_PI) - 1.00);
     cairo_set_line_width(cr, 1.35);
-    cairo_set_source_rgba(cr, 0.76, 0.89, 0.98, 0.96);
+    cairo_set_source_rgba(cr, 0.663, 0.863, 0.969, 0.98);
     cairo_stroke(cr);
 
     double elapsed = (g_get_monotonic_time() - app_state.animation_start) / 1000000.0;
