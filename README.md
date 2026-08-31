@@ -35,7 +35,7 @@ virtual input and observation—not another desktop around the user.
 
 The runtime is deliberately small:
 
-- one ordinary Hyprland window on the host;
+- one ordinary floating Hyprland window on the host;
 - one reduced single-application wlroots micro-host;
 - one native event-loop daemon for observation and scoped input;
 - no nested Hyprland, desktop environment, VM, tmux, or per-application driver;
@@ -44,9 +44,11 @@ The runtime is deliberately small:
 Native Wayland applications are the default. A private XWayland lane supports
 legacy X11 software. Dialogs and child windows stay in the same private
 application tree and keep the sizes requested by the application; only windows
-larger than the private output are constrained. When explicitly enabled, the
-small collaboration head is rendered inside that tree, not as a global desktop
-overlay.
+larger than the available host area are constrained. The private output fits
+the largest mapped application surface, and the address-scoped outer window
+follows that size instead of leaving a desktop-sized black canvas. When
+explicitly enabled, the small collaboration head is rendered inside that tree,
+not as a global desktop overlay.
 
 > AgentSeat isolates input and focus. It is not a filesystem, process, or network
 > sandbox; the wrapped program still runs as your local user.
@@ -91,6 +93,8 @@ Set `PREFIX` to install elsewhere. The default installation is
 ```sh
 agentseat run --host-workspace 8 -- /usr/bin/zenity --info --text='Hello'
 agentseat status
+agentseat heartbeat
+agentseat watch --interval 5
 agentseat windows
 agentseat move 0.50 0.50
 agentseat click
@@ -106,6 +110,24 @@ agentseat stop
 is the default; use `run --x11 -- COMMAND ...` for the generic private-XWayland
 lane. Applications must be launched through AgentSeat; an already-running host
 window cannot be moved across Wayland compositor boundaries.
+
+Each controller command opens a fresh connection to the resident daemon. A
+session has a stable random identity, reported by `status` and `heartbeat`.
+`watch` pins that identity and streams one JSON heartbeat per reconnect; it
+fails instead of silently attaching if the session is replaced. Use
+`--expect-session ID` with either command when another Agent process hands the
+application off:
+
+```sh
+agentseat heartbeat --expect-session ID
+agentseat watch --expect-session ID --interval 5 --count 12
+```
+
+`--count 0` (the default) watches until interrupted. Monitoring is read-only:
+it does not focus, restart, or inject input into the application. The GUI and
+private seat remain resident when a controller or `watch` process exits, so a
+later Agent can reconnect. AgentSeat provides this persistent operating seat;
+an autonomous long-running task still needs its own Agent scheduler or loop.
 
 Pointer coordinates are normalized from `0.0` to `1.0`. Text expressible by
 the current XKB keymap uses virtual keyboard events. Other Unicode text uses a
@@ -177,6 +199,17 @@ The micro-host follows the GUI surface lifetime rather than assuming the first
 launcher process is the application. A launcher may hand off to a resident GUI
 process and exit without tearing down the AgentSeat session.
 
+The micro-host writes the current application-tree bounds to its private runtime
+directory. Startup and later controller heartbeats reconcile only the known
+outer window to those bounds with a one-shot Hyprland resize. This keeps natural
+Wayland and X11 window geometry without changing Hyprland configuration or
+turning AgentSeat into a desktop-sized black surface.
+
+The daemon assigns each launch a stable session identity. Heartbeats expose
+daemon uptime, request count, application-window availability, seat state, and
+human-priority arbitration without changing private focus. A reconnecting
+controller can pin the identity to avoid operating a newly replaced session.
+
 The opt-in collaboration head is a private micro-host surface. Human input
 inside the wrapper takes priority and temporarily pauses Agent injection. Agent
 focus changes only the private application tree.
@@ -199,10 +232,12 @@ workspace:
 ```sh
 python tests/live_generic_matrix.py
 python tests/live_software_matrix.py
+python tests/live_persistent_session.py --duration 60 --interval 5
 ```
 
 They verify native Wayland and private X11 input, Unicode text, child-window
-leasing, observation, cleanup, and host focus/pointer isolation.
+leasing, observation, cleanup, host focus/pointer isolation, and repeated
+reconnection to one long-running GUI session.
 The generic matrix uses host workspace 8 by default; set
 `AGENTSEAT_TEST_WORKSPACE=N` to choose another unused workspace.
 

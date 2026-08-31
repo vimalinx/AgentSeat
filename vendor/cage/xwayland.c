@@ -126,6 +126,7 @@ handle_xwayland_surface_request_configure(struct wl_listener *listener, void *da
 		wlr_xwayland_surface_configure(xsurface, x, y, width, height);
 		return;
 	}
+	view_fit_output(&xwayland_view->view, width, height);
 	view_configure_requested(&xwayland_view->view, width, height);
 }
 

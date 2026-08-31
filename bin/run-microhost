@@ -22,10 +22,12 @@ printf '%s\n' "$$" >"$pid_file"
 export WLR_BACKENDS=wayland
 export WLR_RENDERER=pixman
 export XCURSOR_SIZE=20
+export AGENTSEAT_FIT_OUTPUT=1
 export AGENTSEAT_ROOT="$root"
 export AGENTSEAT_RUNTIME_DIR="$runtime_dir"
 export AGENTSEAT_LAUNCH_SPEC="$runtime_dir/launch.json"
 export AGENTSEAT_ENV_RECEIPT="$runtime_dir/application-env.json"
+export AGENTSEAT_FIT_FILE="$runtime_dir/application-fit.json"
 export AGENTSEAT_READY_FILE="$runtime_dir/microhost.ready"
 export AGENTSEAT_ACTIVITY_SOCKET="$runtime_dir/human.sock"
 

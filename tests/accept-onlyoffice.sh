@@ -27,8 +27,21 @@ while [ "$attempt" -lt 4 ]; do
 done
 [ "$ready" -eq 1 ]
 
-# Ctrl+A gives the private Agent keyboard a deterministic replacement target
-# without relying on toolkit or display-scale-specific pointer coordinates.
+# Fresh OnlyOffice profiles show two first-run feature callouts which consume
+# keyboard focus and ignore Escape. Their "Got it" buttons are anchored to the
+# paste control and status bar, so select them with normalized coordinates from
+# the fitted application capture above. A missing callout only turns either
+# click into a harmless document/status-bar click.
+$agentseat move 0.073 0.375 >/dev/null
+$agentseat click >/dev/null
+$agentseat move 0.60 0.90 >/dev/null
+$agentseat click >/dev/null
+
+# Focus the document itself after clearing the overlays.
+$agentseat move 0.50 0.50 >/dev/null
+$agentseat click >/dev/null
+
+# Ctrl+A gives the private Agent keyboard a deterministic replacement target.
 $agentseat key 29 down >/dev/null
 $agentseat key 30 down >/dev/null
 $agentseat key 30 up >/dev/null
@@ -49,7 +62,9 @@ after_window=$(printf '%s' "$after" | jq -r '.host_now.window')
 ocr=not-checked
 if command -v tesseract >/dev/null 2>&1; then
     normalized_text=$(printf '%s' "$text" | tr -d ' _')
-    if tesseract "$evidence" stdout 2>/dev/null | tr -d ' _' | grep -F "$normalized_text" >/dev/null; then
+    # A mostly blank document page is frequently mis-segmented by Tesseract's
+    # automatic page mode. Uniform-block mode keeps the inserted proof line.
+    if tesseract "$evidence" stdout --psm 6 2>/dev/null | tr -d ' _' | grep -F "$normalized_text" >/dev/null; then
         ocr=passed
     else
         ocr=failed

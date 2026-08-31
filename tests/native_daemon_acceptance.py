@@ -17,14 +17,23 @@ AGENTSEAT = ROOT / "bin/agentseat"
 AGENTSEATD = ROOT / "bin/agentseatd"
 MICROHOST = ROOT / "bin/agentseat-microhost"
 LEGACY_INPUT_PROCESS = ROOT / "bin/agentseat-input"
-STATE = ROOT / "runtime/state.json"
 EVIDENCE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "agentseat/captures"
 USER_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+STATE = USER_RUNTIME_DIR / "agentseat/state.json"
 SOCKET = USER_RUNTIME_DIR / "agentseat/control.sock"
+TEST_WORKSPACE = int(os.environ.get("AGENTSEAT_TEST_WORKSPACE", "8"))
+if TEST_WORKSPACE < 1:
+    raise RuntimeError("AGENTSEAT_TEST_WORKSPACE must be a positive integer")
 
 
 def command(*argv: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(argv, text=True, capture_output=True, check=False)
+    result = subprocess.run(
+        argv,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "AGENTSEAT_LANGUAGE": "en"},
+    )
     if check and result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result
@@ -122,7 +131,7 @@ def main() -> int:
     symlink = EVIDENCE / f"native-daemon-symlink-{stamp}.png"
     try:
         status = agentseat(
-            "run", "--", "/usr/bin/zenity", "--info",
+            "run", "--host-workspace", str(TEST_WORKSPACE), "--", "/usr/bin/zenity", "--info",
             "--title=AgentSeat native daemon acceptance",
             "--text=Native daemon, GUI-only acceptance",
             "--timeout=30",
@@ -144,6 +153,11 @@ def main() -> int:
 
         version = rpc("version")
         assert version["result"]["implementation"] == "native-c-event-loop"
+        heartbeat = agentseat("heartbeat", "--expect-session", str(state["session_id"]))
+        assert heartbeat["healthy"] is True
+        assert heartbeat["session_id"] == state["session_id"]
+        assert heartbeat["daemon"]["daemon_pid"] == daemon_pid
+        assert heartbeat["microhost_pid"] == microhost_pid
         latencies_ms: list[float] = []
         for _ in range(300):
             began = time.perf_counter_ns()
@@ -187,6 +201,11 @@ def main() -> int:
                 "max_ms": round(max(latencies_ms), 4),
             },
             "wayland_display": nested_display,
+            "heartbeat": {
+                "session_id_pinned": True,
+                "fresh_connection_per_request": heartbeat["connection"] == "fresh-unix-socket-per-request",
+                "application_windows": heartbeat["application_windows"],
+            },
             "relative_capture_denied": True,
             "symlink_capture_denied": True,
             "capture": captured["capture"],

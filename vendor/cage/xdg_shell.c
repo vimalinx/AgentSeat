@@ -301,6 +301,10 @@ handle_xdg_toplevel_commit(struct wl_listener *listener, void *data)
 			view->impl->get_geometry(view, &width, &height);
 			if (width <= 80 && height <= 80 && seat_get_focus(view->server->seat) == view)
 				focus_wrapped_application(view->server);
+		} else {
+			int width = 0, height = 0;
+			view->impl->get_geometry(view, &width, &height);
+			view_fit_output(view, width, height);
 		}
 	}
 

@@ -14,6 +14,8 @@ struct cg_output {
 	struct wlr_output *wlr_output;
 	struct wlr_scene_output *scene_output;
 	struct wp_viewport *host_viewport;
+	int fit_max_width;
+	int fit_max_height;
 
 	struct wl_listener commit;
 	struct wl_listener request_state;
@@ -29,6 +31,7 @@ void handle_output_layout_change(struct wl_listener *listener, void *data);
 void handle_new_output(struct wl_listener *listener, void *data);
 void output_set_window_title(struct cg_output *output, const char *title);
 void output_render_all(struct cg_server *server);
+bool output_fit_application(struct cg_server *server, int width, int height);
 bool output_init_host_viewporter(struct cg_server *server);
 void output_finish_host_viewporter(struct cg_server *server);
 

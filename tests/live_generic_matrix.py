@@ -134,9 +134,9 @@ def wayland_case(stamp: str) -> dict[str, Any]:
     agentseat("resume")
 
     cursor_before = host_snapshot()["cursor"]
-    # The fixture keeps its natural 640x320 geometry and is centered. Its
-    # full-width proof button sits just above the vertically expanding entry.
-    agentseat("move", "0.50", "0.46")
+    # The private output now fits the fixture's natural 640x320 buffer exactly.
+    # The full-width proof button is centered at about 29% of its height.
+    agentseat("move", "0.50", "0.29")
     cursor_after = host_snapshot()["cursor"]
     agentseat("click")
     assert wait_for_text(pointer_proof).strip() == "clicked"
@@ -339,7 +339,7 @@ def unicode_case(stamp: str) -> dict[str, Any]:
         "--pointer-proof", str(EVIDENCE / f"unicode-wayland-pointer-{stamp}.txt"),
         "--title", "AgentSeat Unicode Wayland",
     )
-    agentseat("move", "0.50", "0.53")
+    agentseat("move", "0.50", "0.65")
     agentseat("click")
     wayland_type = agentseat("type", marker)
     assert wayland_type["lane"] == "private-wayland-clipboard"

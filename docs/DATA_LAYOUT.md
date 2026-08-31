@@ -14,6 +14,9 @@ read-only at runtime.
 
 Directories are mode 0700. State, launch files, logs, and captures are mode
 0600. The runtime directory is disposable and must not be backed up.
+The current `state.json` contains the random session identity used to pin
+heartbeat reconnects. It is runtime coordination state, not an account token
+or persistent Agent credential, and disappears when the session stops.
 
 Chat messages shown by the collaboration HUD remain only in the daemon's
 memory and disappear when AgentSeat stops. AgentSeat does not create a transcript.

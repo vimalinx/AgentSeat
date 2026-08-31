@@ -103,6 +103,44 @@ view_transient_parent(struct cg_view *view)
 	return NULL;
 }
 
+static void
+fit_application_output(struct cg_server *server, struct cg_view *pending, int pending_width, int pending_height)
+{
+	int width = 0;
+	int height = 0;
+	struct cg_view *candidate;
+	wl_list_for_each (candidate, &server->views, link) {
+		if (view_is_agentseat_overlay(candidate)) {
+			continue;
+		}
+		int candidate_width = 0;
+		int candidate_height = 0;
+		if (candidate == pending && pending_width > 0 && pending_height > 0) {
+			candidate_width = pending_width;
+			candidate_height = pending_height;
+		} else {
+			candidate->impl->get_geometry(candidate, &candidate_width, &candidate_height);
+		}
+		if (candidate_width > width)
+			width = candidate_width;
+		if (candidate_height > height)
+			height = candidate_height;
+	}
+	if (pending && !view_is_agentseat_overlay(pending) && pending_width > 0 && pending_height > 0) {
+		if (pending_width > width)
+			width = pending_width;
+		if (pending_height > height)
+			height = pending_height;
+	}
+	output_fit_application(server, width, height);
+}
+
+void
+view_fit_output(struct cg_view *view, int width, int height)
+{
+	fit_application_output(view->server, view, width, height);
+}
+
 void
 view_configure_requested(struct cg_view *view, int width, int height)
 {
@@ -200,6 +238,7 @@ view_unmap(struct cg_view *view)
 	if (view->server->seat->moving_view == view)
 		view->server->seat->moving_view = NULL;
 	wl_list_remove(&view->link);
+	fit_application_output(view->server, NULL, 0, 0);
 
 	wl_list_remove(&view->request_activate.link);
 	wl_list_remove(&view->request_close.link);
@@ -252,12 +291,16 @@ view_map(struct cg_view *view, struct wlr_surface *surface)
 	view->wlr_surface = surface;
 	surface->data = view;
 
+	bool manage = true;
 #if CAGE_HAS_XWAYLAND
 	/* We shouldn't position override-redirect windows. They set
 	   their own (x,y) coordinates in handle_wayland_surface_map. */
-	if (view->type != CAGE_XWAYLAND_VIEW || xwayland_view_should_manage(view))
+	manage = view->type != CAGE_XWAYLAND_VIEW || xwayland_view_should_manage(view);
 #endif
-	{
+	if (manage) {
+		int width = 0, height = 0;
+		view->impl->get_geometry(view, &width, &height);
+		view_fit_output(view, width, height);
 		view_position(view);
 	}
 

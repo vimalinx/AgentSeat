@@ -26,6 +26,7 @@
 #define MAX_MESSAGES 64
 #define MAX_CHAT_BYTES 2048U
 #define MAX_ACTIVITY_SUMMARY 512U
+#define MAX_SESSION_ID 64U
 
 struct collaboration_message {
     uint64_t id;
@@ -42,6 +43,7 @@ struct rpc_error {
 struct daemon_state {
     const char* socket_path;
     const char* activity_socket_path;
+    const char* session_id;
     const char* seat_id;
     const char* seat_name;
     int workspace;
@@ -67,6 +69,8 @@ struct daemon_state {
     bool created;
     bool paused;
     bool quit;
+    uint64_t started_msec;
+    uint64_t request_count;
     unsigned generation;
     double pointer_x;
     double pointer_y;
@@ -399,6 +403,22 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         json_object_object_add(result, "implementation", json_object_new_string("native-c-event-loop"));
         return result;
     }
+    if (strcmp(method, "session.heartbeat") == 0) {
+        const uint64_t now = monotonic_msec();
+        json_object* result = json_object_new_object();
+        json_object_object_add(result, "session_id", json_object_new_string(state->session_id));
+        json_object_object_add(result, "daemon_pid", json_object_new_int64(getpid()));
+        json_object_object_add(result, "started_msec", json_object_new_int64((int64_t)state->started_msec));
+        json_object_object_add(result, "now_msec", json_object_new_int64((int64_t)now));
+        json_object_object_add(result, "uptime_ms", json_object_new_int64((int64_t)(now - state->started_msec)));
+        json_object_object_add(result, "request_count", json_object_new_int64((int64_t)state->request_count));
+        json_object_object_add(result, "seat_generation", json_object_new_int64(state->generation));
+        json_object_object_add(result, "seat_created", json_object_new_boolean(state->created));
+        json_object_object_add(result, "seat_paused", json_object_new_boolean(state->paused));
+        json_object_object_add(result, "leased_windows", json_object_new_int64((int64_t)state->lease_count));
+        json_object_object_add(result, "collaboration", collaboration_json(state));
+        return result;
+    }
     if (strcmp(method, "collaboration.status") == 0) {
         return collaboration_json(state);
     }
@@ -723,8 +743,10 @@ static json_object* response_for(struct daemon_state* state, json_object* reques
     }
 
     json_object* result = NULL;
-    if (!error.code[0])
+    if (!error.code[0]) {
+        state->request_count++;
         result = dispatch(state, &error, json_object_get_string(method_value), params);
+    }
     if (owns_params)
         json_object_put(params);
 
@@ -871,7 +893,7 @@ static int run_server(struct daemon_state* state) {
 static void usage(const char* program) {
     fprintf(
         stderr,
-        AS_TR("usage: %s --socket PATH --activity-socket PATH [--human-grace-ms N] [--workspace N] [--seat-id ID] [--seat-name NAME] [--app-id ID] [--window-title TITLE] [--xwayland] [--width N] [--height N]\n"),
+        AS_TR("usage: %s --socket PATH --activity-socket PATH [--session-id ID] [--human-grace-ms N] [--workspace N] [--seat-id ID] [--seat-name NAME] [--app-id ID] [--window-title TITLE] [--xwayland] [--width N] [--height N]\n"),
         program);
 }
 
@@ -885,6 +907,7 @@ int main(int argc, char** argv) {
         .paused = true,
         .pointer_x = 0.5,
         .pointer_y = 0.5,
+        .session_id = "agentseat-session",
         .seat_id = "agent:agentseat",
         .seat_name = "AgentSeat Agent",
         .app_id = "agentseat.application",
@@ -898,6 +921,8 @@ int main(int argc, char** argv) {
             state.socket_path = argv[++i];
         else if (strcmp(argv[i], "--activity-socket") == 0 && i + 1 < argc)
             state.activity_socket_path = argv[++i];
+        else if (strcmp(argv[i], "--session-id") == 0 && i + 1 < argc)
+            state.session_id = argv[++i];
         else if (strcmp(argv[i], "--human-grace-ms") == 0 && i + 1 < argc)
             state.human_grace_ms = atoi(argv[++i]);
         else if (strcmp(argv[i], "--workspace") == 0 && i + 1 < argc)
@@ -921,7 +946,8 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    if (!state.socket_path || !state.activity_socket_path || state.workspace <= 0 || state.human_grace_ms < 0 || state.human_grace_ms > 60000 ||
+    if (!state.socket_path || !state.activity_socket_path || !state.session_id || !state.session_id[0] ||
+        strlen(state.session_id) > MAX_SESSION_ID || state.workspace <= 0 || state.human_grace_ms < 0 || state.human_grace_ms > 60000 ||
         state.output_width <= 0 || state.output_height <= 0) {
         usage(argv[0]);
         return 2;
@@ -947,6 +973,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    state.started_msec = monotonic_msec();
     const int result = run_server(&state);
     seat_destroy(&state);
     agentseat_input_close(state.input);

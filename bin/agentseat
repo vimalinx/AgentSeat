@@ -67,6 +67,7 @@ WL_PASTE = Path("/usr/bin/wl-paste")
 MICROHOST_PID = RUNTIME / "microhost.pid"
 EYE_PID = RUNTIME / "eye.pid"
 APPLICATION_ENV = RUNTIME / "application-env.json"
+APPLICATION_FIT = RUNTIME / "application-fit.json"
 MICROHOST_READY = RUNTIME / "microhost.ready"
 CONTROL_SOCKET = RUNTIME / "control.sock"
 ACTIVITY_SOCKET = RUNTIME / "human.sock"
@@ -410,6 +411,7 @@ def launch_window_properties(host_workspace: int, active_workspace: int | None) 
     if host_workspace <= 0:
         raise AgentSeatError(_("host workspace must be a positive integer"))
     properties = [
+        "float true",
         "no_initial_focus true",
         "focus_on_activate false",
         "suppress_event activate activatefocus",
@@ -583,6 +585,63 @@ def load_application_env() -> dict[str, str] | None:
     }
 
 
+def load_application_fit() -> dict[str, int] | None:
+    try:
+        value = json.loads(APPLICATION_FIT.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    keys = ("logical_width", "logical_height", "buffer_width", "buffer_height")
+    if any(not isinstance(value.get(key), int) or value[key] <= 0 for key in keys):
+        return None
+    return {key: int(value[key]) for key in keys}
+
+
+def resize_outer_to_fit(
+    host_signature: str,
+    microhost: int,
+    outer_window: str,
+    application_fit: dict[str, int],
+) -> dict[str, Any]:
+    desired_size = [application_fit["logical_width"], application_fit["logical_height"]]
+    outer = host_client_for_pid(host_signature, microhost)
+    if outer and list(outer.get("size", [])) == desired_size:
+        return outer
+    run([
+        "hyprctl", "--instance", host_signature, "dispatch", "resizewindowpixel",
+        f"exact {desired_size[0]} {desired_size[1]},address:{outer_window}",
+    ])
+    return wait_for(
+        lambda: (
+            candidate
+            if (candidate := host_client_for_pid(host_signature, microhost))
+            and list(candidate.get("size", [])) == desired_size
+            else None
+        ),
+        3,
+        _("outer AgentSeat window did not adopt the application size"),
+    )
+
+
+def reconcile_outer_size(state_value: dict[str, Any] | None = None) -> dict[str, Any]:
+    current = dict(state_value if state_value is not None else load_state())
+    application_fit = load_application_fit()
+    if not current or not application_fit:
+        return current
+    signature = current.get("host_instance")
+    outer_window = current.get("outer_window")
+    microhost = microhost_pid()
+    if not isinstance(signature, str) or not isinstance(outer_window, str) or not microhost:
+        return current
+    outer = resize_outer_to_fit(signature, microhost, outer_window, application_fit)
+    logical_size = list(outer.get("size", [application_fit["logical_width"], application_fit["logical_height"]]))
+    buffer_size = [application_fit["buffer_width"], application_fit["buffer_height"]]
+    if current.get("viewport_logical_size") != logical_size or current.get("physical_buffer_size") != buffer_size:
+        current["viewport_logical_size"] = logical_size
+        current["physical_buffer_size"] = buffer_size
+        save_state(current)
+    return current
+
+
 def legacy_command(preset: str) -> tuple[list[str], str, str | None]:
     if preset == "onlyoffice":
         return ["/usr/bin/onlyoffice-desktopeditors"], "wayland", "onlyoffice-native-wayland"
@@ -591,6 +650,7 @@ def legacy_command(preset: str) -> tuple[list[str], str, str | None]:
 
 def sync_window_tree(*, focus_newest: bool = True) -> list[dict[str, Any]]:
     """Lazily include every mapped window in the wrapped app's private workspace."""
+    reconcile_outer_size()
     windows = rpc("window.list")
     added: list[dict[str, Any]] = []
     for window in windows:
@@ -637,7 +697,7 @@ def start_application(
     )
     launch_properties = launch_window_properties(host_workspace, before.get("workspace"))
     ensure_runtime_storage()
-    for stale in (MICROHOST_PID, EYE_PID, APPLICATION_ENV, MICROHOST_READY):
+    for stale in (MICROHOST_PID, EYE_PID, APPLICATION_ENV, APPLICATION_FIT, MICROHOST_READY):
         try:
             stale.unlink()
         except FileNotFoundError:
@@ -671,6 +731,17 @@ def start_application(
         load_application_env, 8, _("AgentSeat application environment receipt did not appear")
     )
     wait_for(MICROHOST_READY.exists, 12, _("application did not map in the AgentSeat micro-host"))
+    application_fit = wait_for(
+        load_application_fit,
+        3,
+        _("application size did not settle in the AgentSeat micro-host"),
+    )
+    outer = resize_outer_to_fit(
+        str(host["instance"]),
+        int(microhost),
+        str(outer["address"]),
+        application_fit,
+    )
     daemon_log = open_private_log(LOG_DIR / "daemon.log")
     env = dict(os.environ)
     env.update({
@@ -680,10 +751,12 @@ def start_application(
     })
     if CURRENT_LOCALE_DIR:
         env["AGENTSEAT_LOCALE_DIR"] = str(CURRENT_LOCALE_DIR)
+    session_id = uuid.uuid4().hex
     daemon_argv = [
         str(NATIVE_DAEMON),
         "--socket", str(CONTROL_SOCKET),
         "--activity-socket", str(ACTIVITY_SOCKET),
+        "--session-id", session_id,
         "--human-grace-ms", str(PREFERENCES["human_priority_grace_ms"]),
         "--workspace", str(host_workspace),
         "--seat-id", "agent:agentseat",
@@ -727,6 +800,7 @@ def start_application(
             )
         )
     state_value = {
+        "session_id": session_id,
         "launch": {"argv": argv, "mode": mode, "cwd": cwd},
         "host_instance": host["instance"],
         "backend": "cage-microhost",
@@ -738,10 +812,7 @@ def start_application(
         "render_scale": 1,
         "physical_pixel_layout": True,
         "viewport_logical_size": list(outer.get("size", [1280, 720])),
-        "physical_buffer_size": [
-            physical_size_for_host(int(outer.get("size", [1280, 720])[0]), host_scale),
-            physical_size_for_host(int(outer.get("size", [1280, 720])[1]), host_scale),
-        ],
+        "physical_buffer_size": [application_fit["buffer_width"], application_fit["buffer_height"]],
         "wayland_display": app_environment["wayland_display"],
         "x_display": app_environment["display"],
         "daemon_pid": daemon.pid,
@@ -780,6 +851,8 @@ def status() -> dict[str, Any]:
     state_value = load_state()
     microhost = microhost_pid()
     live = bool(microhost and CONTROL_SOCKET.exists())
+    if live:
+        state_value = reconcile_outer_size(state_value)
     result: dict[str, Any] = {"protocol_version": 1, "running": live, "state": state_value}
     result["eye_hud"] = {
         "running": eye_pid() is not None,
@@ -798,6 +871,88 @@ def status() -> dict[str, Any]:
         result["host_matches_start_snapshot"] = matches_start
         result["host_focus_unchanged"] = matches_start
     return result
+
+
+def session_heartbeat(expected_session_id: str | None = None) -> dict[str, Any]:
+    """Verify one live session without changing its window focus or input state."""
+    state_value = load_state()
+    microhost = microhost_pid()
+    if not microhost or not CONTROL_SOCKET.exists():
+        raise AgentSeatError(_("AgentSeat is not running"))
+    state_value = reconcile_outer_size(state_value)
+    daemon = rpc("session.heartbeat")
+    session_id = daemon.get("session_id") if isinstance(daemon, dict) else None
+    if not isinstance(session_id, str) or not session_id:
+        raise AgentSeatError(_("AgentSeat daemon returned an invalid session identity"))
+    persisted_session_id = state_value.get("session_id")
+    if isinstance(persisted_session_id, str) and persisted_session_id != session_id:
+        raise AgentSeatError(
+            _("AgentSeat runtime state belongs to a different session: expected {expected}, got {actual}").format(
+                expected=persisted_session_id,
+                actual=session_id,
+            )
+        )
+    if expected_session_id and expected_session_id != session_id:
+        raise AgentSeatError(
+            _("AgentSeat session changed: expected {expected}, got {actual}").format(
+                expected=expected_session_id,
+                actual=session_id,
+            )
+        )
+    daemon_pid = daemon.get("daemon_pid")
+    persisted_daemon_pid = state_value.get("daemon_pid")
+    if persisted_daemon_pid is not None and daemon_pid != persisted_daemon_pid:
+        raise AgentSeatError(_("AgentSeat runtime state does not match the connected daemon"))
+    windows = rpc("window.list") if daemon.get("seat_created") else []
+    healthy = bool(daemon.get("seat_created") and windows)
+    if not healthy:
+        raise AgentSeatError(_("AgentSeat session has no usable application window"))
+    return {
+        "healthy": True,
+        "session_id": session_id,
+        "reconnectable": True,
+        "connection": "fresh-unix-socket-per-request",
+        "microhost_pid": microhost,
+        "application_windows": len(windows),
+        "state_matches_daemon": True,
+        "daemon": daemon,
+    }
+
+
+def watch_session(*, interval: float, count: int, expected_session_id: str | None = None) -> dict[str, Any]:
+    """Continuously reconnect to one session and stream compact JSON heartbeats."""
+    if not math.isfinite(interval) or interval < 0.1 or interval > 3600:
+        raise AgentSeatError(_("watch interval must be between 0.1 and 3600 seconds"))
+    if count < 0:
+        raise AgentSeatError(_("watch count must be zero or a positive integer"))
+    sequence = 0
+    pinned_session_id = expected_session_id
+    last_sample: dict[str, Any] = {}
+    while count == 0 or sequence < count:
+        heartbeat = session_heartbeat(pinned_session_id)
+        if pinned_session_id is None:
+            pinned_session_id = heartbeat["session_id"]
+        sequence += 1
+        daemon = heartbeat["daemon"]
+        collaboration = daemon.get("collaboration", {})
+        last_sample = {
+            "sequence": sequence,
+            "observed_unix_ms": time.time_ns() // 1_000_000,
+            "healthy": True,
+            "session_id": heartbeat["session_id"],
+            "uptime_ms": daemon.get("uptime_ms"),
+            "request_count": daemon.get("request_count"),
+            "daemon_pid": daemon.get("daemon_pid"),
+            "microhost_pid": heartbeat["microhost_pid"],
+            "application_windows": heartbeat["application_windows"],
+            "seat_paused": daemon.get("seat_paused"),
+            "agent_allowed": collaboration.get("agent_allowed"),
+            "human_active": collaboration.get("human_active"),
+        }
+        print(json.dumps(last_sample, ensure_ascii=False, separators=(",", ":")), flush=True)
+        if count == 0 or sequence < count:
+            time.sleep(interval)
+    return last_sample
 
 
 def start_hud() -> dict[str, Any]:
@@ -909,7 +1064,7 @@ def stop() -> dict[str, Any]:
         STATE.unlink()
     except FileNotFoundError:
         pass
-    for transient in (LAUNCH_SPEC, APPLICATION_ENV, MICROHOST_PID, MICROHOST_READY, EYE_PID):
+    for transient in (LAUNCH_SPEC, APPLICATION_ENV, APPLICATION_FIT, MICROHOST_PID, MICROHOST_READY, EYE_PID):
         try:
             transient.unlink()
         except FileNotFoundError:
@@ -1219,6 +1374,34 @@ def main() -> int:
     commands.add_parser("paths", help=_("show AgentSeat's XDG storage locations"))
     commands.add_parser("config", help=_("show the effective AgentSeat configuration"))
     commands.add_parser("status", help=_("show the current AgentSeat session"))
+    heartbeat_parser = commands.add_parser(
+        "heartbeat",
+        help=_("verify that the current application session can be reconnected"),
+    )
+    heartbeat_parser.add_argument(
+        "--expect-session",
+        help=_("fail if the connected session does not have this identity"),
+    )
+    watch_parser = commands.add_parser(
+        "watch",
+        help=_("continuously reconnect and stream session heartbeats"),
+    )
+    watch_parser.add_argument(
+        "--interval",
+        type=float,
+        default=5.0,
+        help=_("seconds between reconnect checks"),
+    )
+    watch_parser.add_argument(
+        "--count",
+        type=int,
+        default=0,
+        help=_("number of checks; zero keeps watching until interrupted"),
+    )
+    watch_parser.add_argument(
+        "--expect-session",
+        help=_("fail if the connected session does not have this identity"),
+    )
     hud_parser = commands.add_parser("hud", help=_("control the embedded private-microhost AI head"))
     hud_parser.add_argument("action", choices=("start", "stop", "status"))
     commands.add_parser("collaboration", help=_("show human-priority and AI activity state"))
@@ -1275,6 +1458,15 @@ def main() -> int:
         result = configuration_status()
     elif args.command == "status":
         result = status()
+    elif args.command == "heartbeat":
+        result = session_heartbeat(args.expect_session)
+    elif args.command == "watch":
+        watch_session(
+            interval=args.interval,
+            count=args.count,
+            expected_session_id=args.expect_session,
+        )
+        return 0
     elif args.command == "hud":
         if args.action == "start":
             result = start_hud()

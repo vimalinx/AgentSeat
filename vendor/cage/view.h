@@ -62,6 +62,7 @@ bool view_is_agentseat_overlay(struct cg_view *view);
 bool view_has_application_views(struct cg_server *server);
 void view_activate(struct cg_view *view, bool activate);
 void view_configure_requested(struct cg_view *view, int width, int height);
+void view_fit_output(struct cg_view *view, int width, int height);
 void view_position(struct cg_view *view);
 void view_position_all(struct cg_server *server);
 void view_unmap(struct cg_view *view);

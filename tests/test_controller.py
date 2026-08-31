@@ -211,7 +211,7 @@ def test_host_focus_relation_never_mistakes_human_activity_for_wrapper_focus(con
 
 
 def test_launch_window_properties_places_only_inactive_target_workspace(controller: ModuleType) -> None:
-    focus_guards = "no_initial_focus true; focus_on_activate false; suppress_event activate activatefocus"
+    focus_guards = "float true; no_initial_focus true; focus_on_activate false; suppress_event activate activatefocus"
     assert controller.launch_window_properties(2, 2) == f"[{focus_guards}]"
     assert controller.launch_window_properties(8, 2) == f"[workspace 8; {focus_guards}]"
     with pytest.raises(controller.AgentSeatError, match="positive integer"):
@@ -270,6 +270,74 @@ def test_write_launch_spec_is_atomic_private_and_generic(controller: ModuleType,
     }
     assert stat.S_IMODE(controller.LAUNCH_SPEC.stat().st_mode) == 0o600
     assert not controller.LAUNCH_SPEC.with_suffix(".tmp").exists()
+
+
+def test_application_fit_receipt_requires_positive_integer_dimensions(
+    controller: ModuleType, tmp_path: Path
+) -> None:
+    controller.APPLICATION_FIT = tmp_path / "application-fit.json"
+    controller.APPLICATION_FIT.write_text(
+        json.dumps(
+            {
+                "logical_width": 400,
+                "logical_height": 200,
+                "buffer_width": 640,
+                "buffer_height": 320,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert controller.load_application_fit() == {
+        "logical_width": 400,
+        "logical_height": 200,
+        "buffer_width": 640,
+        "buffer_height": 320,
+    }
+
+    controller.APPLICATION_FIT.write_text('{"logical_width": 0}', encoding="utf-8")
+    assert controller.load_application_fit() is None
+
+
+def test_outer_resize_is_scoped_to_the_agentseat_window(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clients = iter(
+        [
+            {"address": "0xseat", "size": [1280, 720]},
+            {"address": "0xseat", "size": [400, 200]},
+        ]
+    )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(controller, "host_client_for_pid", lambda signature, pid: next(clients))
+    monkeypatch.setattr(
+        controller,
+        "run",
+        lambda argv, **_: commands.append(argv) or subprocess.CompletedProcess(argv, 0, "ok", ""),
+    )
+
+    outer = controller.resize_outer_to_fit(
+        "host-signature",
+        123,
+        "0xseat",
+        {
+            "logical_width": 400,
+            "logical_height": 200,
+            "buffer_width": 640,
+            "buffer_height": 320,
+        },
+    )
+
+    assert outer["size"] == [400, 200]
+    assert commands == [
+        [
+            "hyprctl",
+            "--instance",
+            "host-signature",
+            "dispatch",
+            "resizewindowpixel",
+            "exact 400 200,address:0xseat",
+        ]
+    ]
 
 
 @pytest.mark.parametrize(
@@ -448,6 +516,98 @@ def test_version_is_available_before_daemon_start(controller: ModuleType, tmp_pa
         "protocol_version": 1,
         "daemon": None,
     }
+
+
+def test_heartbeat_reconnects_without_changing_window_focus(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    controller.CONTROL_SOCKET = tmp_path / "control.sock"
+    controller.CONTROL_SOCKET.touch()
+    monkeypatch.setattr(
+        controller,
+        "load_state",
+        lambda: {"session_id": "session-a", "daemon_pid": 44},
+    )
+    monkeypatch.setattr(controller, "microhost_pid", lambda: 33)
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    def fake_rpc(method: str, params: dict[str, Any] | None = None) -> Any:
+        calls.append((method, params))
+        if method == "session.heartbeat":
+            return {
+                "session_id": "session-a",
+                "daemon_pid": 44,
+                "seat_created": True,
+                "uptime_ms": 1234,
+            }
+        if method == "window.list":
+            return [{"id": "agentseat:root", "focused": False}]
+        raise AssertionError(method)
+
+    monkeypatch.setattr(controller, "rpc", fake_rpc)
+
+    heartbeat = controller.session_heartbeat("session-a")
+
+    assert heartbeat["healthy"] is True
+    assert heartbeat["session_id"] == "session-a"
+    assert heartbeat["microhost_pid"] == 33
+    assert heartbeat["application_windows"] == 1
+    assert calls == [("session.heartbeat", None), ("window.list", None)]
+    assert all(method not in {"window.focus", "window.lease"} for method, _ in calls)
+
+
+def test_heartbeat_refuses_a_replaced_session(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    controller.CONTROL_SOCKET = tmp_path / "control.sock"
+    controller.CONTROL_SOCKET.touch()
+    monkeypatch.setattr(controller, "load_state", lambda: {"session_id": "session-new"})
+    monkeypatch.setattr(controller, "microhost_pid", lambda: 33)
+    monkeypatch.setattr(
+        controller,
+        "rpc",
+        lambda method, params=None: {
+            "session_id": "session-new",
+            "daemon_pid": 44,
+            "seat_created": True,
+        },
+    )
+
+    with pytest.raises(controller.AgentSeatError, match="session changed"):
+        controller.session_heartbeat("session-old")
+
+
+def test_watch_pins_first_session_and_opens_a_fresh_check_each_time(
+    controller: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    expected_ids: list[str | None] = []
+
+    def fake_heartbeat(expected_session_id: str | None = None) -> dict[str, Any]:
+        expected_ids.append(expected_session_id)
+        return {
+            "session_id": "session-a",
+            "microhost_pid": 33,
+            "application_windows": 1,
+            "daemon": {
+                "session_id": "session-a",
+                "daemon_pid": 44,
+                "uptime_ms": len(expected_ids) * 100,
+                "request_count": len(expected_ids),
+                "seat_paused": False,
+                "collaboration": {"agent_allowed": True, "human_active": False},
+            },
+        }
+
+    monkeypatch.setattr(controller, "session_heartbeat", fake_heartbeat)
+    monkeypatch.setattr(controller.time, "sleep", lambda _: None)
+
+    final = controller.watch_session(interval=0.1, count=3)
+    samples = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+    assert expected_ids == [None, "session-a", "session-a"]
+    assert [sample["sequence"] for sample in samples] == [1, 2, 3]
+    assert all(sample["healthy"] is True for sample in samples)
+    assert final == samples[-1]
 
 
 def test_sync_window_tree_leases_only_new_windows_and_focuses_newest(

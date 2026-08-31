@@ -18,6 +18,9 @@ support. Local changes are deliberately scoped to the collaboration wrapper:
 - preserve application-requested top-level and dialog geometry, honor managed
   XWayland configure requests, center transient children on their parent, and
   constrain only surfaces which exceed the private output;
+- fit the nested output to the largest mapped application surface and publish a
+  private mode-0600 size receipt so the AgentSeat controller can keep its one
+  known floating host window free of desktop-sized black canvas;
 - keep mapped GUI surfaces alive when a short-lived launcher hands work to a
   resident process, while retaining bounded failed-launch cleanup and owned
   process-group teardown;

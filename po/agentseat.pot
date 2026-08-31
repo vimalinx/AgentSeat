@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-31 18:50+0800\n"
+"POT-Creation-Date: 2026-08-31 23:22+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -17,520 +17,584 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: bin/agentseat:175
+#: bin/agentseat:176
 msgid "language must be auto, en, zh-CN, or zh-TW"
 msgstr ""
 
-#: bin/agentseat:185
+#: bin/agentseat:186
 #, python-format
 msgid "%(heading)s:"
 msgstr ""
 
-#: bin/agentseat:186
-msgid "usage: "
-msgstr ""
-
 #: bin/agentseat:187
-#, python-format
-msgid " (default: %(default)s)"
+msgid "usage: "
 msgstr ""
 
 #: bin/agentseat:188
 #, python-format
-msgid "argument %(argument_name)s: %(message)s"
+msgid " (default: %(default)s)"
 msgstr ""
 
 #: bin/agentseat:189
-msgid "show program's version number and exit"
+#, python-format
+msgid "argument %(argument_name)s: %(message)s"
 msgstr ""
 
 #: bin/agentseat:190
-#, python-format
-msgid "unknown parser %(parser_name)r (choices: %(choices)s)"
+msgid "show program's version number and exit"
 msgstr ""
 
 #: bin/agentseat:191
 #, python-format
-msgid "command '%(parser_name)s' is deprecated"
+msgid "unknown parser %(parser_name)r (choices: %(choices)s)"
 msgstr ""
 
 #: bin/agentseat:192
 #, python-format
-msgid "argument \"-\" with mode %r"
+msgid "command '%(parser_name)s' is deprecated"
 msgstr ""
 
 #: bin/agentseat:193
 #, python-format
-msgid "can't open '%(filename)s': %(error)s"
+msgid "argument \"-\" with mode %r"
 msgstr ""
 
 #: bin/agentseat:194
-msgid "positional arguments"
+#, python-format
+msgid "can't open '%(filename)s': %(error)s"
 msgstr ""
 
 #: bin/agentseat:195
-msgid "options"
+msgid "positional arguments"
 msgstr ""
 
 #: bin/agentseat:196
-msgid "show this help message and exit"
+msgid "options"
 msgstr ""
 
 #: bin/agentseat:197
-msgid "subcommands"
+msgid "show this help message and exit"
 msgstr ""
 
 #: bin/agentseat:198
-#, python-format
-msgid "unrecognized arguments: %s"
+msgid "subcommands"
 msgstr ""
 
 #: bin/agentseat:199
 #, python-format
-msgid "not allowed with argument %s"
+msgid "unrecognized arguments: %s"
 msgstr ""
 
 #: bin/agentseat:200
 #, python-format
-msgid "ambiguous option: %(option)s could match %(matches)s"
+msgid "not allowed with argument %s"
 msgstr ""
 
 #: bin/agentseat:201
 #, python-format
-msgid "ignored explicit argument %r"
+msgid "ambiguous option: %(option)s could match %(matches)s"
 msgstr ""
 
 #: bin/agentseat:202
 #, python-format
-msgid "option '%(option)s' is deprecated"
+msgid "ignored explicit argument %r"
 msgstr ""
 
 #: bin/agentseat:203
 #, python-format
-msgid "argument '%(argument_name)s' is deprecated"
+msgid "option '%(option)s' is deprecated"
 msgstr ""
 
 #: bin/agentseat:204
 #, python-format
-msgid "the following arguments are required: %s"
+msgid "argument '%(argument_name)s' is deprecated"
 msgstr ""
 
 #: bin/agentseat:205
 #, python-format
-msgid "one of the arguments %s is required"
+msgid "the following arguments are required: %s"
 msgstr ""
 
 #: bin/agentseat:206
-msgid "expected one argument"
+#, python-format
+msgid "one of the arguments %s is required"
 msgstr ""
 
 #: bin/agentseat:207
-msgid "expected at most one argument"
+msgid "expected one argument"
 msgstr ""
 
 #: bin/agentseat:208
-msgid "expected at least one argument"
+msgid "expected at most one argument"
 msgstr ""
 
 #: bin/agentseat:209
-#, python-format
-msgid "unexpected option string: %s"
+msgid "expected at least one argument"
 msgstr ""
 
 #: bin/agentseat:210
 #, python-format
-msgid "invalid %(type)s value: %(value)r"
+msgid "unexpected option string: %s"
 msgstr ""
 
 #: bin/agentseat:211
 #, python-format
-msgid "invalid choice: %(value)r (choose from %(choices)s)"
+msgid "invalid %(type)s value: %(value)r"
 msgstr ""
 
 #: bin/agentseat:212
 #, python-format
-msgid "%(prog)s: error: %(message)s\n"
+msgid "invalid choice: %(value)r (choose from %(choices)s)"
 msgstr ""
 
 #: bin/agentseat:213
 #, python-format
+msgid "%(prog)s: error: %(message)s\n"
+msgstr ""
+
+#: bin/agentseat:214
+#, python-format
 msgid "%(prog)s: warning: %(message)s\n"
 msgstr ""
 
-#: bin/agentseat:232
+#: bin/agentseat:233
 #, python-brace-format
 msgid "command failed: {command}"
 msgstr ""
 
-#: bin/agentseat:252
+#: bin/agentseat:253
 msgid "memory-only; cleared when the daemon exits"
 msgstr ""
 
-#: bin/agentseat:253
+#: bin/agentseat:254
 msgid "volatile; removed by the user session runtime manager"
 msgstr ""
 
-#: bin/agentseat:254
+#: bin/agentseat:255
 msgid "written only when observe is requested"
 msgstr ""
 
-#: bin/agentseat:267
+#: bin/agentseat:268
 #, python-brace-format
 msgid "cannot read AgentSeat configuration {path}: {error}"
 msgstr ""
 
-#: bin/agentseat:271
+#: bin/agentseat:272
 msgid "AgentSeat configuration [general] must be a table"
 msgstr ""
 
-#: bin/agentseat:280
+#: bin/agentseat:281
 msgid "general.default_workspace must be a positive integer"
 msgstr ""
 
-#: bin/agentseat:282
+#: bin/agentseat:283
 msgid "general.human_priority_grace_ms must be an integer from 0 to 60000"
 msgstr ""
 
-#: bin/agentseat:284
+#: bin/agentseat:285
 msgid "general.eye_hud must be true or false"
 msgstr ""
 
-#: bin/agentseat:286 bin/agentseat:290
+#: bin/agentseat:287 bin/agentseat:291
 msgid "general.language must be auto, en, zh-CN, or zh-TW"
 msgstr ""
 
-#: bin/agentseat:354
+#: bin/agentseat:355
 msgid "host Hyprland instance not found"
 msgstr ""
 
-#: bin/agentseat:411
+#: bin/agentseat:412
 msgid "host workspace must be a positive integer"
 msgstr ""
 
-#: bin/agentseat:499
+#: bin/agentseat:501
 msgid "AgentSeat daemon response exceeds 1 MiB"
 msgstr ""
 
-#: bin/agentseat:501
+#: bin/agentseat:503
 #, python-brace-format
 msgid "cannot reach AgentSeat daemon: {error}"
 msgstr ""
 
-#: bin/agentseat:503
+#: bin/agentseat:505
 msgid "AgentSeat daemon returned no response"
 msgstr ""
 
-#: bin/agentseat:507
+#: bin/agentseat:509
 #, python-brace-format
 msgid "invalid AgentSeat daemon response: {error}"
 msgstr ""
 
-#: bin/agentseat:509
+#: bin/agentseat:511
 msgid "AgentSeat daemon response ID mismatch"
 msgstr ""
 
-#: bin/agentseat:513
+#: bin/agentseat:515
 msgid "AgentSeat daemon rejected the request"
 msgstr ""
 
-#: bin/agentseat:543
+#: bin/agentseat:545
 msgid "run requires a non-empty command after --"
 msgstr ""
 
-#: bin/agentseat:552
+#: bin/agentseat:554
 #, python-brace-format
 msgid "working directory does not exist: {path}"
 msgstr ""
 
-#: bin/agentseat:558
+#: bin/agentseat:560
 #, python-brace-format
 msgid "unsupported display mode: {mode}"
 msgstr ""
 
-#: bin/agentseat:589
+#: bin/agentseat:621
+msgid "outer AgentSeat window did not adopt the application size"
+msgstr ""
+
+#: bin/agentseat:648
 #, python-brace-format
 msgid "unknown legacy preset: {preset}"
 msgstr ""
 
-#: bin/agentseat:624
+#: bin/agentseat:684
 msgid ""
 "AgentSeat is already running another application; stop it before launching a "
 "different command"
 msgstr ""
 
-#: bin/agentseat:627
+#: bin/agentseat:687
 msgid ""
 "an unmanaged AgentSeat micro-host is already running; run agentseat stop "
 "first"
 msgstr ""
 
-#: bin/agentseat:650
+#: bin/agentseat:710
 msgid "AgentSeat micro-host did not appear"
 msgstr ""
 
-#: bin/agentseat:654
+#: bin/agentseat:714
 msgid "outer AgentSeat window did not appear"
 msgstr ""
 
-#: bin/agentseat:658
+#: bin/agentseat:718
 #, python-brace-format
 msgid "AgentSeat outer window did not map on requested workspace {workspace}"
 msgstr ""
 
-#: bin/agentseat:664
+#: bin/agentseat:724
 #, python-brace-format
 msgid "native AgentSeat daemon is missing or not executable: {path}"
 msgstr ""
 
-#: bin/agentseat:668
+#: bin/agentseat:728
 #, python-brace-format
 msgid "native wlr-screencopy client is missing or not executable: {path}"
 msgstr ""
 
-#: bin/agentseat:671
+#: bin/agentseat:731
 msgid "AgentSeat application environment receipt did not appear"
 msgstr ""
 
-#: bin/agentseat:673
+#: bin/agentseat:733
 msgid "application did not map in the AgentSeat micro-host"
 msgstr ""
 
-#: bin/agentseat:706
+#: bin/agentseat:737
+msgid "application size did not settle in the AgentSeat micro-host"
+msgstr ""
+
+#: bin/agentseat:779
 msgid "AgentSeat daemon socket did not appear"
 msgstr ""
 
-#: bin/agentseat:708
+#: bin/agentseat:781
 msgid "application window did not appear"
 msgstr ""
 
-#: bin/agentseat:725
+#: bin/agentseat:798
 msgid "host focus isolation failed: before={before!r} after={after!r}"
 msgstr ""
 
-#: bin/agentseat:809
+#: bin/agentseat:881
+msgid "AgentSeat is not running"
+msgstr ""
+
+#: bin/agentseat:886
+msgid "AgentSeat daemon returned an invalid session identity"
+msgstr ""
+
+#: bin/agentseat:890
+#, python-brace-format
+msgid ""
+"AgentSeat runtime state belongs to a different session: expected {expected}, "
+"got {actual}"
+msgstr ""
+
+#: bin/agentseat:897
+#, python-brace-format
+msgid "AgentSeat session changed: expected {expected}, got {actual}"
+msgstr ""
+
+#: bin/agentseat:905
+msgid "AgentSeat runtime state does not match the connected daemon"
+msgstr ""
+
+#: bin/agentseat:909
+msgid "AgentSeat session has no usable application window"
+msgstr ""
+
+#: bin/agentseat:925
+msgid "watch interval must be between 0.1 and 3600 seconds"
+msgstr ""
+
+#: bin/agentseat:927
+msgid "watch count must be zero or a positive integer"
+msgstr ""
+
+#: bin/agentseat:964
 #, python-brace-format
 msgid "native AgentSeat eye HUD is missing or not executable: {path}"
 msgstr ""
 
-#: bin/agentseat:813
+#: bin/agentseat:968
 msgid "AgentSeat must be running before its embedded AI head can start"
 msgstr ""
 
-#: bin/agentseat:819
+#: bin/agentseat:974
 msgid "AgentSeat private Wayland display is unavailable"
 msgstr ""
 
-#: bin/agentseat:849
+#: bin/agentseat:1004
 #, python-brace-format
 msgid "AgentSeat eye HUD exited during startup; inspect {path}"
 msgstr ""
 
-#: bin/agentseat:868
+#: bin/agentseat:1023
 msgid "AgentSeat eye HUD did not stop"
 msgstr ""
 
-#: bin/agentseat:891
+#: bin/agentseat:1046
 msgid "daemon did not stop"
 msgstr ""
 
-#: bin/agentseat:898
+#: bin/agentseat:1053
 #, python-brace-format
 msgid "refusing to remove an unexpected AgentSeat socket: {path}"
 msgstr ""
 
-#: bin/agentseat:907
+#: bin/agentseat:1062
 msgid "AgentSeat micro-host did not stop"
 msgstr ""
 
-#: bin/agentseat:947
+#: bin/agentseat:1102
 msgid "private X display is unavailable"
 msgstr ""
 
-#: bin/agentseat:955
+#: bin/agentseat:1110
 msgid "no OnlyOffice window is available"
 msgstr ""
 
-#: bin/agentseat:968
+#: bin/agentseat:1123
 msgid "private X clipboard owner failed"
 msgstr ""
 
-#: bin/agentseat:987
+#: bin/agentseat:1142
 msgid "OnlyOffice Paste menu item was not visually detected"
 msgstr ""
 
-#: bin/agentseat:1014
+#: bin/agentseat:1169
 msgid "private Wayland display is unavailable"
 msgstr ""
 
-#: bin/agentseat:1018
+#: bin/agentseat:1173
 #, python-brace-format
 msgid "private Unicode clipboard helper is unavailable: {path}"
 msgstr ""
 
-#: bin/agentseat:1035
+#: bin/agentseat:1190
 msgid "private clipboard input pipe is unavailable"
 msgstr ""
 
-#: bin/agentseat:1045
+#: bin/agentseat:1200
 msgid "private AgentSeat clipboard did not become ready"
 msgstr ""
 
-#: bin/agentseat:1055
+#: bin/agentseat:1210
 msgid "application did not request the private AgentSeat clipboard"
 msgstr ""
 
-#: bin/agentseat:1058
+#: bin/agentseat:1213
 msgid "private AgentSeat clipboard transfer failed"
 msgstr ""
 
-#: bin/agentseat:1078
+#: bin/agentseat:1233
 msgid "capture output must be an absolute .png path"
 msgstr ""
 
-#: bin/agentseat:1082
+#: bin/agentseat:1237
 #, python-brace-format
 msgid "capture output parent is unavailable: {error}"
 msgstr ""
 
-#: bin/agentseat:1084
+#: bin/agentseat:1239
 msgid "capture output parent must be a directory owned by the current user"
 msgstr ""
 
-#: bin/agentseat:1087
+#: bin/agentseat:1242
 msgid "capture output cannot be a symbolic link"
 msgstr ""
 
-#: bin/agentseat:1089
+#: bin/agentseat:1244
 msgid ""
 "existing capture output must be a regular file owned by the current user"
 msgstr ""
 
-#: bin/agentseat:1100
+#: bin/agentseat:1255
 msgid "no leased application window is available"
 msgstr ""
 
-#: bin/agentseat:1113
+#: bin/agentseat:1268
 msgid "AgentSeat micro-host exited before capture"
 msgstr ""
 
-#: bin/agentseat:1129
+#: bin/agentseat:1284
 #, python-brace-format
 msgid "micro-host screencopy did not complete: {error}"
 msgstr ""
 
-#: bin/agentseat:1131
+#: bin/agentseat:1286
 msgid "native wlr-screencopy failed"
 msgstr ""
 
-#: bin/agentseat:1187
+#: bin/agentseat:1342
 msgid "Operate one local application with a private AI pointer and keyboard."
 msgstr ""
 
-#: bin/agentseat:1193
+#: bin/agentseat:1348
 msgid "interface language: auto, en, zh-CN, or zh-TW"
 msgstr ""
 
-#: bin/agentseat:1196
+#: bin/agentseat:1351
 msgid "start a legacy verified demo"
 msgstr ""
 
-#: bin/agentseat:1202 bin/agentseat:1215
+#: bin/agentseat:1357 bin/agentseat:1370
 msgid "place the outer window on this host workspace"
 msgstr ""
 
-#: bin/agentseat:1204
+#: bin/agentseat:1359
 msgid "wrap an arbitrary application command"
 msgstr ""
 
-#: bin/agentseat:1208
+#: bin/agentseat:1363
 msgid "force the generic private-XWayland compatibility lane"
 msgstr ""
 
-#: bin/agentseat:1210
+#: bin/agentseat:1365
 msgid "working directory for the wrapped application"
 msgstr ""
 
-#: bin/agentseat:1217
+#: bin/agentseat:1372
 msgid "application command after --"
 msgstr ""
 
-#: bin/agentseat:1218
+#: bin/agentseat:1373
 msgid "show the controller and protocol version"
 msgstr ""
 
-#: bin/agentseat:1219
+#: bin/agentseat:1374
 msgid "show AgentSeat's XDG storage locations"
 msgstr ""
 
-#: bin/agentseat:1220
+#: bin/agentseat:1375
 msgid "show the effective AgentSeat configuration"
 msgstr ""
 
-#: bin/agentseat:1221
+#: bin/agentseat:1376
 msgid "show the current AgentSeat session"
 msgstr ""
 
-#: bin/agentseat:1222
+#: bin/agentseat:1379
+msgid "verify that the current application session can be reconnected"
+msgstr ""
+
+#: bin/agentseat:1383 bin/agentseat:1403
+msgid "fail if the connected session does not have this identity"
+msgstr ""
+
+#: bin/agentseat:1387
+msgid "continuously reconnect and stream session heartbeats"
+msgstr ""
+
+#: bin/agentseat:1393
+msgid "seconds between reconnect checks"
+msgstr ""
+
+#: bin/agentseat:1399
+msgid "number of checks; zero keeps watching until interrupted"
+msgstr ""
+
+#: bin/agentseat:1405
 msgid "control the embedded private-microhost AI head"
 msgstr ""
 
-#: bin/agentseat:1224
+#: bin/agentseat:1407
 msgid "show human-priority and AI activity state"
 msgstr ""
 
-#: bin/agentseat:1225
+#: bin/agentseat:1408
 msgid "publish the Agent's current AgentSeat action"
 msgstr ""
 
-#: bin/agentseat:1228
+#: bin/agentseat:1411
 msgid "read messages sent from the eye HUD"
 msgstr ""
 
-#: bin/agentseat:1230
+#: bin/agentseat:1413
 msgid "reply to the human in the eye HUD"
 msgstr ""
 
-#: bin/agentseat:1232
+#: bin/agentseat:1415
 msgid "list windows in the wrapped application tree"
 msgstr ""
 
-#: bin/agentseat:1233
+#: bin/agentseat:1416
 msgid "pause Agent input"
 msgstr ""
 
-#: bin/agentseat:1234
+#: bin/agentseat:1417
 msgid "resume Agent input"
 msgstr ""
 
-#: bin/agentseat:1235
+#: bin/agentseat:1418
 msgid "move the private pointer using normalized coordinates"
 msgstr ""
 
-#: bin/agentseat:1238
+#: bin/agentseat:1421
 msgid "click with the private pointer"
 msgstr ""
 
-#: bin/agentseat:1240
+#: bin/agentseat:1423
 msgid "scroll inside the wrapped application"
 msgstr ""
 
-#: bin/agentseat:1243
+#: bin/agentseat:1426
 msgid "send one scoped evdev key event"
 msgstr ""
 
-#: bin/agentseat:1246
+#: bin/agentseat:1429
 msgid "type text with the private keyboard"
 msgstr ""
 
-#: bin/agentseat:1248
+#: bin/agentseat:1431
 msgid "capture the private application output"
 msgstr ""
 
-#: bin/agentseat:1250
+#: bin/agentseat:1433
 msgid "stop the current AgentSeat session"
 msgstr ""
 
-#: bin/agentseat:1335
+#: bin/agentseat:1527
 msgid "unknown command"
 msgstr ""
 
@@ -622,177 +686,177 @@ msgstr ""
 msgid "agentseat-eye: cannot render head: %s\n"
 msgstr ""
 
-#: native/agentseatd.c:105
+#: native/agentseatd.c:109
 msgid "AgentSeat request failed"
 msgstr ""
 
-#: native/agentseatd.c:155
+#: native/agentseatd.c:159
 msgid "Native AgentSeat input failed"
 msgstr ""
 
-#: native/agentseatd.c:161
+#: native/agentseatd.c:165
 msgid "Required string parameter is missing"
 msgstr ""
 
-#: native/agentseatd.c:166
+#: native/agentseatd.c:170
 msgid "String parameter must not be empty"
 msgstr ""
 
-#: native/agentseatd.c:179
+#: native/agentseatd.c:183
 msgid "Boolean parameter has the wrong type"
 msgstr ""
 
-#: native/agentseatd.c:191
+#: native/agentseatd.c:195
 msgid "Optional string parameter has the wrong type"
 msgstr ""
 
-#: native/agentseatd.c:278
+#: native/agentseatd.c:282
 msgid "Call seat.create before using AgentSeat"
 msgstr ""
 
-#: native/agentseatd.c:288
+#: native/agentseatd.c:292
 msgid "Agent seat is paused"
 msgstr ""
 
-#: native/agentseatd.c:297
+#: native/agentseatd.c:301
 #, c-format
 msgid "Human input has priority; retry after %d ms of quiet"
 msgstr ""
 
-#: native/agentseatd.c:309
+#: native/agentseatd.c:313
 msgid "Focus a leased window before sending input"
 msgstr ""
 
-#: native/agentseatd.c:414
+#: native/agentseatd.c:434
 msgid "Activity text exceeds the AgentSeat collaboration limit"
 msgstr ""
 
-#: native/agentseatd.c:426
+#: native/agentseatd.c:446
 msgid "Chat text exceeds the AgentSeat collaboration limit"
 msgstr ""
 
-#: native/agentseatd.c:437
+#: native/agentseatd.c:457
 msgid "after_id must be a non-negative integer"
 msgstr ""
 
-#: native/agentseatd.c:529
+#: native/agentseatd.c:549
 msgid "Window is not leased to AgentSeat"
 msgstr ""
 
-#: native/agentseatd.c:533
+#: native/agentseatd.c:553
 msgid "The single-app micro-host has no such window"
 msgstr ""
 
-#: native/agentseatd.c:540
+#: native/agentseatd.c:560
 msgid "Capture the micro-host output through wlr-screencopy"
 msgstr ""
 
-#: native/agentseatd.c:548
+#: native/agentseatd.c:568
 msgid "Too many windows are mapped in the wrapped application"
 msgstr ""
 
-#: native/agentseatd.c:563
+#: native/agentseatd.c:583
 msgid "pointer.move_absolute requires x and y"
 msgstr ""
 
-#: native/agentseatd.c:569
+#: native/agentseatd.c:589
 msgid "x and y must be normalized from 0 to 1"
 msgstr ""
 
-#: native/agentseatd.c:588
+#: native/agentseatd.c:608
 msgid "pointer.button requires button and pressed"
 msgstr ""
 
-#: native/agentseatd.c:593
+#: native/agentseatd.c:613
 msgid "button must be an integer from 1 to 1023"
 msgstr ""
 
-#: native/agentseatd.c:610
+#: native/agentseatd.c:630
 msgid "pointer.scroll requires axis and value120"
 msgstr ""
 
-#: native/agentseatd.c:614
+#: native/agentseatd.c:634
 msgid "axis must be vertical or horizontal"
 msgstr ""
 
-#: native/agentseatd.c:619
+#: native/agentseatd.c:639
 msgid "value120 must be from -12000 to 12000"
 msgstr ""
 
-#: native/agentseatd.c:641
+#: native/agentseatd.c:661
 msgid "text exceeds the native AgentSeat input limit"
 msgstr ""
 
-#: native/agentseatd.c:647
+#: native/agentseatd.c:667
 msgid "interval_ms must be from 0 to 10000"
 msgstr ""
 
-#: native/agentseatd.c:676
+#: native/agentseatd.c:696
 msgid "keyboard.key requires keycode and pressed"
 msgstr ""
 
-#: native/agentseatd.c:681
+#: native/agentseatd.c:701
 msgid "keycode must be an evdev code from 0 to 767"
 msgstr ""
 
-#: native/agentseatd.c:698
+#: native/agentseatd.c:718
 msgid "Unknown native AgentSeat method"
 msgstr ""
 
-#: native/agentseatd.c:717
+#: native/agentseatd.c:737
 msgid "method must be a non-empty string"
 msgstr ""
 
-#: native/agentseatd.c:722
+#: native/agentseatd.c:742
 msgid "params must be an object"
 msgstr ""
 
-#: native/agentseatd.c:740
+#: native/agentseatd.c:762
 msgid "Native AgentSeat request failed"
 msgstr ""
 
-#: native/agentseatd.c:767
+#: native/agentseatd.c:789
 msgid "Cannot create AgentSeat runtime directory"
 msgstr ""
 
-#: native/agentseatd.c:773
+#: native/agentseatd.c:795
 msgid "Cannot create AgentSeat Unix socket"
 msgstr ""
 
-#: native/agentseatd.c:778
+#: native/agentseatd.c:800
 msgid "AgentSeat socket path is too long"
 msgstr ""
 
-#: native/agentseatd.c:783
+#: native/agentseatd.c:805
 msgid "Cannot bind AgentSeat Unix socket"
 msgstr ""
 
-#: native/agentseatd.c:789
+#: native/agentseatd.c:811
 msgid "Cannot create AgentSeat activity runtime directory"
 msgstr ""
 
-#: native/agentseatd.c:795
+#: native/agentseatd.c:817
 msgid "Cannot create AgentSeat human activity socket"
 msgstr ""
 
-#: native/agentseatd.c:800
+#: native/agentseatd.c:822
 msgid "AgentSeat activity socket path is too long"
 msgstr ""
 
-#: native/agentseatd.c:805
+#: native/agentseatd.c:827
 msgid "Cannot bind AgentSeat human activity socket"
 msgstr ""
 
-#: native/agentseatd.c:850
+#: native/agentseatd.c:872
 msgid "input dispatch failed"
 msgstr ""
 
-#: native/agentseatd.c:874
+#: native/agentseatd.c:896
 #, c-format
 msgid ""
-"usage: %s --socket PATH --activity-socket PATH [--human-grace-ms N] [--"
-"workspace N] [--seat-id ID] [--seat-name NAME] [--app-id ID] [--window-title "
-"TITLE] [--xwayland] [--width N] [--height N]\n"
+"usage: %s --socket PATH --activity-socket PATH [--session-id ID] [--human-"
+"grace-ms N] [--workspace N] [--seat-id ID] [--seat-name NAME] [--app-id ID] "
+"[--window-title TITLE] [--xwayland] [--width N] [--height N]\n"
 msgstr ""
 
 #: native/agentseat-input.c:280

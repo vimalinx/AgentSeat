@@ -7,12 +7,15 @@
  * See the LICENSE file accompanying this file.
  */
 
-#define _POSIX_C_SOURCE 200112L
+#define _POSIX_C_SOURCE 200809L
 
 #include "config.h"
 
 #include <assert.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -71,6 +74,13 @@ agentseat_physical_layout(void)
 	return value && strcmp(value, "1") == 0;
 }
 
+static bool
+agentseat_fit_output(void)
+{
+	const char *value = getenv("AGENTSEAT_FIT_OUTPUT");
+	return value && strcmp(value, "1") == 0;
+}
+
 static int
 physical_size(int logical_size, float scale)
 {
@@ -81,6 +91,34 @@ static int
 logical_size(int physical_size_value, float scale)
 {
 	return (int)lroundf((float)physical_size_value / scale);
+}
+
+static void
+write_fit_receipt(int logical_width, int logical_height, int buffer_width, int buffer_height)
+{
+	const char *path = getenv("AGENTSEAT_FIT_FILE");
+	if (!path || !path[0]) {
+		return;
+	}
+	char temporary[PATH_MAX];
+	int path_length = snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+	if (path_length < 0 || (size_t)path_length >= sizeof(temporary)) {
+		return;
+	}
+	int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0) {
+		return;
+	}
+	char payload[192];
+	int payload_length = snprintf(payload, sizeof(payload),
+		"{\"logical_width\":%d,\"logical_height\":%d,\"buffer_width\":%d,\"buffer_height\":%d}\n",
+		logical_width, logical_height, buffer_width, buffer_height);
+	bool complete = payload_length > 0 && (size_t)payload_length < sizeof(payload) &&
+		write(fd, payload, (size_t)payload_length) == payload_length;
+	close(fd);
+	if (!complete || rename(temporary, path) != 0) {
+		unlink(temporary);
+	}
 }
 
 static void
@@ -274,6 +312,55 @@ output_render_all(struct cg_server *server)
 	}
 }
 
+bool
+output_fit_application(struct cg_server *server, int width, int height)
+{
+	if (!agentseat_fit_output() || width < 160 || height < 120) {
+		return false;
+	}
+
+	struct cg_output *output = NULL;
+	struct cg_output *candidate;
+	wl_list_for_each (candidate, &server->outputs, link) {
+		if (candidate->wlr_output->enabled && wlr_output_is_wl(candidate->wlr_output)) {
+			output = candidate;
+			break;
+		}
+	}
+	if (!output) {
+		return false;
+	}
+
+	if (output->fit_max_width > 0 && width > output->fit_max_width) {
+		width = output->fit_max_width;
+	}
+	if (output->fit_max_height > 0 && height > output->fit_max_height) {
+		height = output->fit_max_height;
+	}
+	float scale = output->host_viewport ? agentseat_host_scale() : 1.0f;
+	int logical_width = output->host_viewport ? logical_size(width, scale) : width;
+	int logical_height = output->host_viewport ? logical_size(height, scale) : height;
+	if (width == output->wlr_output->width && height == output->wlr_output->height) {
+		write_fit_receipt(logical_width, logical_height, width, height);
+		return false;
+	}
+
+	if (output->host_viewport) {
+		wp_viewport_set_destination(output->host_viewport, logical_width, logical_height);
+	}
+
+	struct wlr_output_state state = {0};
+	wlr_output_state_set_custom_mode(&state, width, height, output->wlr_output->refresh);
+	if (!wlr_output_commit_state(output->wlr_output, &state)) {
+		wlr_log(WLR_ERROR, "Unable to fit nested output to application size %dx%d", width, height);
+		return false;
+	}
+	wlr_log(WLR_DEBUG, "Fitted nested output to application size %dx%d", width, height);
+	write_fit_receipt(logical_width, logical_height, width, height);
+	update_output_manager_config(server);
+	return true;
+}
+
 static void
 handle_output_frame(struct wl_listener *listener, void *data)
 {
@@ -334,6 +421,10 @@ handle_output_request_state(struct wl_listener *listener, void *data)
 		}
 		width = physical_size(logical_width, scale);
 		height = physical_size(logical_height, scale);
+		if (width > output->fit_max_width)
+			output->fit_max_width = width;
+		if (height > output->fit_max_height)
+			output->fit_max_height = height;
 		wp_viewport_set_destination(output->host_viewport, logical_width, logical_height);
 		wlr_output_state_set_custom_mode(&state, width, height, refresh);
 		wlr_output_state_set_scale(&state, agentseat_physical_layout() ? 1.0f : scale);
@@ -345,6 +436,10 @@ handle_output_request_state(struct wl_listener *listener, void *data)
 	}
 
 	if (wlr_output_commit_state(output->wlr_output, event->state)) {
+		if (output->wlr_output->width > output->fit_max_width)
+			output->fit_max_width = output->wlr_output->width;
+		if (output->wlr_output->height > output->fit_max_height)
+			output->fit_max_height = output->wlr_output->height;
 		update_output_manager_config(output->server);
 	}
 }
@@ -519,6 +614,8 @@ handle_new_output(struct wl_listener *listener, void *data)
 
 	wlr_log(WLR_DEBUG, "Enabling new output %s", wlr_output->name);
 	if (wlr_output_commit_state(wlr_output, &state)) {
+		output->fit_max_width = wlr_output->width;
+		output->fit_max_height = wlr_output->height;
 		output_layout_add_auto(output);
 	}
 

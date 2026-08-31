@@ -35,7 +35,7 @@ Agent 的虚拟输入和观察能力建立了一条狭窄的应用边界，而�
 
 运行时刻意保持精简：
 
-- 宿主上只有一个普通 Hyprland 窗口；
+- 宿主上只有一个普通的 Hyprland 浮动窗口；
 - 一个精简的单应用 wlroots 微宿主；
 - 一个负责观察和限定范围输入的原生事件循环守护进程；
 - 没有嵌套 Hyprland、桌面环境、虚拟机、tmux 或逐应用驱动；
@@ -43,8 +43,9 @@ Agent 的虚拟输入和观察能力建立了一条狭窄的应用边界，而�
 
 默认运行原生 Wayland 应用，私有 XWayland 通道用于兼容旧版 X11 软件。
 对话框和子窗口会留在同一棵私有应用树中，并保留应用请求的尺寸；只有
-超过私有输出范围的窗口才会被约束。显式启用后，小型协作脑袋也渲染在这棵树
-内部，而不是成为全局桌面浮层。
+超过宿主可用区域的窗口才会被约束。私有输出会匹配当前最大的应用表面，
+宿主外窗也会跟随这个尺寸，不再留下桌面大小的黑色画布。显式启用后，
+小型协作脑袋也渲染在这棵树内部，而不是成为全局桌面浮层。
 
 > AgentSeat 隔离的是输入和焦点，不是文件系统、进程或网络沙箱；被封装
 > 的程序仍以你的本地用户身份运行。
@@ -90,6 +91,8 @@ Agent 的虚拟输入和观察能力建立了一条狭窄的应用边界，而�
 ```sh
 agentseat run --host-workspace 8 -- /usr/bin/zenity --info --text='你好'
 agentseat status
+agentseat heartbeat
+agentseat watch --interval 5
 agentseat windows
 agentseat move 0.50 0.50
 agentseat click
@@ -104,6 +107,21 @@ agentseat stop
 `run` 直接接收 argv，绝不会交给 shell 求值。默认使用 Wayland；需要通用
 私有 XWayland 通道时使用 `run --x11 -- COMMAND ...`。应用必须由 AgentSeat
 启动；Wayland 合成器边界不允许把已经运行的宿主窗口直接搬进来。
+
+每条控制器命令都会重新连接常驻守护进程。每个会话都有稳定的随机身份，
+`status` 和 `heartbeat` 都会返回它。`watch` 会固定这个身份，并在每次重连时
+输出一行 JSON 心跳；如果会话被替换，它会直接失败，不会悄悄接管新会话。
+另一个 Agent 进程接手应用时，可以显式传入身份：
+
+```sh
+agentseat heartbeat --expect-session ID
+agentseat watch --expect-session ID --interval 5 --count 12
+```
+
+`--count 0` 是默认值，表示持续监测到进程被中断。监测是只读的：不会聚焦、
+重启应用或注入输入。控制器或 `watch` 退出后，GUI 和私有 seat 仍可常驻，
+后续 Agent 可以重新连接。AgentSeat 提供的是这个持续的操作席位；真正长期
+自主执行任务仍需要外部的 Agent 调度器或循环。
 
 指针坐标采用从 `0.0` 到 `1.0` 的归一化值。当前 XKB 键盘映射能够表达的
 文本通过虚拟键盘事件输入；其他 Unicode 文本通过私有微宿主内的一次性
@@ -168,6 +186,15 @@ Python 命令是短生命周期控制器。`agentseatd` 持有控制套接字和
 微宿主跟随 GUI 表面的生命周期，而不是把第一个启动器进程当成应用本身。启动器可以把
 工作交给常驻 GUI 进程后退出，不会因此拆掉 AgentSeat 会话。
 
+微宿主会把当前应用窗口树的边界写入私有运行时目录。启动阶段和后续控制器
+心跳只会按地址同步已知的 AgentSeat 外窗尺寸。这样既保留 Wayland/X11
+应用的自然几何，也无须修改 Hyprland 配置，更不会把 AgentSeat 变成铺满
+桌面的黑色表面。
+
+守护进程会为每次启动分配稳定的会话身份。心跳会只读返回守护进程运行时长、
+请求计数、应用窗口可用性、seat 状态和人类优先仲裁状态，不会改变私有焦点。
+重连控制器可以固定会话身份，避免误操作后来替换的新会话。
+
 需要主动启用的协作小脑袋是私有微宿主表面。封装窗口内的人类输入拥有
 优先权，并会暂时暂停 Agent 输入注入；Agent 的焦点变化只发生在私有应用
 树内。
@@ -188,10 +215,12 @@ pytest -q tests/test_controller.py
 ```sh
 python tests/live_generic_matrix.py
 python tests/live_software_matrix.py
+python tests/live_persistent_session.py --duration 60 --interval 5
 ```
 
 它们验证原生 Wayland 和私有 X11 输入、Unicode 文本、子窗口授权、观察、
-清理，以及宿主焦点和指针隔离。通用矩阵默认使用宿主工作区 8；可以设置
+清理、宿主焦点和指针隔离，以及对同一长期 GUI 会话的反复重连。通用矩阵
+默认使用宿主工作区 8；可以设置
 `AGENTSEAT_TEST_WORKSPACE=N` 选择另一个空闲工作区。
 
 ## 社区
