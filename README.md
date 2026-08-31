@@ -2,6 +2,10 @@
   <img src="assets/brand/agentseat-hero.svg" alt="AgentSeat — one app, two operators" width="100%">
 </p>
 
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
 <h1 align="center">AgentSeat</h1>
 
 <p align="center">
