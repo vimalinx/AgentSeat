@@ -16,6 +16,7 @@
 <p align="center">
   <a href="https://github.com/vimalinx/AgentSeat/releases/latest"><img alt="GitHub release" src="https://img.shields.io/github/v/release/vimalinx/AgentSeat?style=flat-square&amp;color=57b8ed"></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-080c11?style=flat-square"></a>
+  <a href="https://linux.do/"><img alt="LINUX DO Community" src="https://img.shields.io/badge/community-LINUX%20DO-1F883D?style=flat-square&amp;logo=discourse&amp;logoColor=white"></a>
   <img alt="Wayland native" src="https://img.shields.io/badge/Wayland-native-a9dcf7?style=flat-square&amp;labelColor=080c11">
   <img alt="Hyprland host" src="https://img.shields.io/badge/Hyprland-host-a9dcf7?style=flat-square&amp;labelColor=080c11">
 </p>
@@ -198,6 +199,11 @@ They verify native Wayland and private X11 input, Unicode text, child-window
 leasing, observation, cleanup, and host focus/pointer isolation.
 The generic matrix uses host workspace 8 by default; set
 `AGENTSEAT_TEST_WORKSPACE=N` to choose another unused workspace.
+
+## Community
+
+Questions, compatibility reports, and suggestions are welcome in the
+[LINUX DO community](https://linux.do/).
 
 ## License and provenance
 

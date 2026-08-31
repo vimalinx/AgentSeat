@@ -16,6 +16,7 @@
 <p align="center">
   <a href="https://github.com/vimalinx/AgentSeat/releases/latest"><img alt="GitHub 发行版" src="https://img.shields.io/github/v/release/vimalinx/AgentSeat?style=flat-square&amp;color=57b8ed"></a>
   <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-080c11?style=flat-square"></a>
+  <a href="https://linux.do/"><img alt="LINUX DO 社区" src="https://img.shields.io/badge/community-LINUX%20DO-1F883D?style=flat-square&amp;logo=discourse&amp;logoColor=white"></a>
   <img alt="Wayland 原生" src="https://img.shields.io/badge/Wayland-native-a9dcf7?style=flat-square&amp;labelColor=080c11">
   <img alt="Hyprland 宿主" src="https://img.shields.io/badge/Hyprland-host-a9dcf7?style=flat-square&amp;labelColor=080c11">
 </p>
@@ -188,6 +189,10 @@ python tests/live_software_matrix.py
 它们验证原生 Wayland 和私有 X11 输入、Unicode 文本、子窗口授权、观察、
 清理，以及宿主焦点和指针隔离。通用矩阵默认使用宿主工作区 8；可以设置
 `AGENTSEAT_TEST_WORKSPACE=N` 选择另一个空闲工作区。
+
+## 社区
+
+欢迎到 [LINUX DO 社区](https://linux.do/) 交流使用经验、兼容性反馈和改进建议。
 
 ## 许可证与来源
 
