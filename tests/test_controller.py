@@ -19,6 +19,8 @@ CONTROLLER_PATH = ROOT / "bin/agentseat"
 LAUNCHER_PATH = ROOT / "bin/launch-app"
 EYE_SOURCE_PATH = ROOT / "native/agentseat-eye.c"
 MICROHOST_SOURCE_PATH = ROOT / "vendor/cage/cage.c"
+BUILD_TRANSLATIONS = ROOT / "scripts/build-translations.sh"
+CHECK_TRANSLATIONS = ROOT / "scripts/check-translations.sh"
 
 
 def load_script(name: str, path: Path) -> ModuleType:
@@ -97,6 +99,7 @@ def test_config_reads_validated_xdg_preferences(tmp_path: Path) -> None:
         "default_workspace": 8,
         "human_priority_grace_ms": 900,
         "eye_hud": False,
+        "language": "auto",
     }
 
 
@@ -112,6 +115,67 @@ def test_config_keeps_collaboration_head_hidden_by_default(tmp_path: Path) -> No
 
     assert config["exists"] is False
     assert config["effective"]["eye_hud"] is False
+    assert config["effective"]["language"] == "auto"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("en_US.UTF-8", "en"),
+        ("zh_CN.UTF-8", "zh_CN"),
+        ("zh-Hans", "zh_CN"),
+        ("zh_TW.UTF-8", "zh_TW"),
+        ("zh-Hant", "zh_TW"),
+        ("fr_FR.UTF-8", "en"),
+    ],
+)
+def test_language_normalization_is_stable(
+    controller: ModuleType, value: str, expected: str
+) -> None:
+    assert controller.normalize_language(value) == expected
+
+
+def test_cli_and_config_select_complete_locales(tmp_path: Path) -> None:
+    subprocess.run([str(CHECK_TRANSLATIONS)], check=True, capture_output=True, text=True)
+    subprocess.run([str(BUILD_TRANSLATIONS)], check=True, capture_output=True, text=True)
+    locale_dir = ROOT / "build/locale"
+
+    expected_help = {
+        "en": "wrap an arbitrary application command",
+        "zh-CN": "封装任意应用命令",
+        "zh-TW": "封裝任意應用程式命令",
+    }
+    for language, marker in expected_help.items():
+        result = subprocess.run(
+            [str(CONTROLLER_PATH), "--language", language, "--help"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "AGENTSEAT_LOCALE_DIR": str(locale_dir)},
+        )
+        assert marker in result.stdout
+
+    config_dir = tmp_path / "agentseat"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        '[general]\nlanguage = "zh-CN"\n', encoding="utf-8"
+    )
+    environment = {
+        **os.environ,
+        "AGENTSEAT_CONFIG_HOME": str(config_dir),
+        "AGENTSEAT_LOCALE_DIR": str(locale_dir),
+    }
+    environment.pop("AGENTSEAT_LANGUAGE", None)
+    result = subprocess.run(
+        [str(CONTROLLER_PATH), "config"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    config = json.loads(result.stdout)
+    assert config["effective"]["language"] == "zh-CN"
+    assert config["resolved_language"] == "zh-CN"
 
 
 def test_config_rejects_unsafe_values(tmp_path: Path) -> None:
@@ -310,7 +374,7 @@ def test_hud_keeps_one_persistent_head_outside_the_animated_stack() -> None:
 
     assert "GtkWidget* head_area;" in source
     assert "gtk_overlay_add_overlay(GTK_OVERLAY(hud_root), app_state.head_area);" in source
-    assert source.count('build_head_button("展开 AgentSeat AI 小脑袋")') == 1
+    assert source.count('build_head_button(AS_TR("Expand the AgentSeat AI head"))') == 1
     assert "collapsed_eye_area" not in source
     assert "expanded_eye_area" not in source
 

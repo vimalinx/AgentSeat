@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import gettext
 import json
 import math
 import os
@@ -70,10 +71,152 @@ MICROHOST_READY = RUNTIME / "microhost.ready"
 CONTROL_SOCKET = RUNTIME / "control.sock"
 ACTIVITY_SOCKET = RUNTIME / "human.sock"
 RPC_LIMIT = 1_048_576
+SUPPORTED_LANGUAGES = {
+    "en": "en",
+    "en-us": "en",
+    "en_us": "en",
+    "zh": "zh_CN",
+    "zh-cn": "zh_CN",
+    "zh_cn": "zh_CN",
+    "zh-hans": "zh_CN",
+    "zh_hans": "zh_CN",
+    "zh-tw": "zh_TW",
+    "zh_tw": "zh_TW",
+    "zh-hk": "zh_TW",
+    "zh_hk": "zh_TW",
+    "zh-hant": "zh_TW",
+    "zh_hant": "zh_TW",
+}
+LANGUAGE_NAMES = {"en": "en", "zh_CN": "zh-CN", "zh_TW": "zh-TW"}
+CURRENT_LANGUAGE = "en"
+CURRENT_LOCALE_DIR: Path | None = None
+_translation: gettext.NullTranslations = gettext.NullTranslations()
+_ = _translation.gettext
+
+
+def normalize_language(value: str | None, *, allow_auto: bool = False) -> str:
+    if value is None or not value.strip():
+        return "auto" if allow_auto else "en"
+    cleaned = value.strip()
+    if cleaned.casefold() == "auto":
+        if allow_auto:
+            return "auto"
+        return system_language()
+    base = cleaned.split(".", 1)[0].split("@", 1)[0]
+    normalized = SUPPORTED_LANGUAGES.get(base.casefold())
+    if normalized:
+        return normalized
+    if base.casefold().startswith("en"):
+        return "en"
+    return "en"
+
+
+def system_language() -> str:
+    candidates: list[str] = []
+    language = os.environ.get("LANGUAGE", "")
+    if language:
+        candidates.extend(item for item in language.split(":") if item)
+    candidates.extend(
+        value for value in (os.environ.get("LC_ALL"), os.environ.get("LC_MESSAGES"), os.environ.get("LANG"))
+        if value
+    )
+    for candidate in candidates:
+        base = candidate.split(".", 1)[0].split("@", 1)[0]
+        normalized = SUPPORTED_LANGUAGES.get(base.casefold())
+        if normalized:
+            return normalized
+        if base.casefold().startswith("en"):
+            return "en"
+    return "en"
+
+
+def locale_directory() -> Path | None:
+    configured = os.environ.get("AGENTSEAT_LOCALE_DIR")
+    candidates = [Path(configured).expanduser()] if configured else []
+    candidates.extend((ROOT / "share/locale", ROOT / "build/locale"))
+    return next((path.resolve() for path in candidates if path.is_dir()), None)
+
+
+def configure_i18n(requested: str | None) -> str:
+    global CURRENT_LANGUAGE, CURRENT_LOCALE_DIR, _translation, _
+    selected = normalize_language(requested, allow_auto=True)
+    if selected == "auto":
+        selected = system_language()
+    CURRENT_LANGUAGE = selected
+    CURRENT_LOCALE_DIR = locale_directory()
+    try:
+        _translation = gettext.translation(
+            "agentseat",
+            localedir=os.fspath(CURRENT_LOCALE_DIR) if CURRENT_LOCALE_DIR else None,
+            languages=[selected],
+            fallback=True,
+        )
+    except OSError:
+        _translation = gettext.NullTranslations()
+    _ = _translation.gettext
+    return selected
+
+
+def language_override(argv: list[str]) -> str | None:
+    for index, value in enumerate(argv):
+        if value == "--language" and index + 1 < len(argv):
+            return argv[index + 1]
+        if value.startswith("--language="):
+            return value.partition("=")[2]
+    return None
+
+
+def language_option(value: str) -> str:
+    if value.casefold() == "auto":
+        return "auto"
+    base = value.split(".", 1)[0].split("@", 1)[0]
+    normalized = SUPPORTED_LANGUAGES.get(base.casefold())
+    if not normalized:
+        raise argparse.ArgumentTypeError(_("language must be auto, en, zh-CN, or zh-TW"))
+    return LANGUAGE_NAMES[normalized]
+
+
+configure_i18n(os.environ.get("AGENTSEAT_LANGUAGE", "auto"))
+
+# These strings are owned by argparse but use the AgentSeat translator after
+# language selection. Keeping extraction markers here gives the built-in help
+# and error chrome the same language as our command descriptions.
+if False:  # pragma: no cover - gettext extraction markers only
+    _("%(heading)s:")
+    _("usage: ")
+    _(" (default: %(default)s)")
+    _("argument %(argument_name)s: %(message)s")
+    _("show program's version number and exit")
+    _("unknown parser %(parser_name)r (choices: %(choices)s)")
+    _("command '%(parser_name)s' is deprecated")
+    _("argument \"-\" with mode %r")
+    _("can't open '%(filename)s': %(error)s")
+    _("positional arguments")
+    _("options")
+    _("show this help message and exit")
+    _("subcommands")
+    _("unrecognized arguments: %s")
+    _("not allowed with argument %s")
+    _("ambiguous option: %(option)s could match %(matches)s")
+    _("ignored explicit argument %r")
+    _("option '%(option)s' is deprecated")
+    _("argument '%(argument_name)s' is deprecated")
+    _("the following arguments are required: %s")
+    _("one of the arguments %s is required")
+    _("expected one argument")
+    _("expected at most one argument")
+    _("expected at least one argument")
+    _("unexpected option string: %s")
+    _("invalid %(type)s value: %(value)r")
+    _("invalid choice: %(value)r (choose from %(choices)s)")
+    _("%(prog)s: error: %(message)s\n")
+    _("%(prog)s: warning: %(message)s\n")
+
 DEFAULT_PREFERENCES: dict[str, Any] = {
     "default_workspace": 1,
     "human_priority_grace_ms": 1500,
     "eye_hud": False,
+    "language": "auto",
 }
 PREFERENCES = dict(DEFAULT_PREFERENCES)
 
@@ -85,7 +228,9 @@ class AgentSeatError(RuntimeError):
 def run(argv: list[str], *, env: dict[str, str] | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(argv, text=True, capture_output=True, env=env, check=False)
     if check and result.returncode:
-        raise AgentSeatError(result.stderr.strip() or result.stdout.strip() or f"command failed: {argv[0]}")
+        raise AgentSeatError(
+            result.stderr.strip() or result.stdout.strip() or _("command failed: {command}").format(command=argv[0])
+        )
     return result
 
 
@@ -104,9 +249,9 @@ def storage_paths() -> dict[str, Any]:
         "cache": str(CACHE_HOME),
         "runtime": str(RUNTIME),
         "privacy": {
-            "chat": "memory-only; cleared when the daemon exits",
-            "runtime": "volatile; removed by the user session runtime manager",
-            "captures": "written only when observe is requested",
+            "chat": _("memory-only; cleared when the daemon exits"),
+            "runtime": _("volatile; removed by the user session runtime manager"),
+            "captures": _("written only when observe is requested"),
         },
     }
 
@@ -118,22 +263,32 @@ def load_preferences() -> dict[str, Any]:
     try:
         raw = tomllib.loads(CONFIG_FILE.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise AgentSeatError(f"cannot read AgentSeat configuration {CONFIG_FILE}: {exc}") from exc
+        raise AgentSeatError(
+            _("cannot read AgentSeat configuration {path}: {error}").format(path=CONFIG_FILE, error=exc)
+        ) from exc
     general = raw.get("general", {})
     if not isinstance(general, dict):
-        raise AgentSeatError("AgentSeat configuration [general] must be a table")
+        raise AgentSeatError(_("AgentSeat configuration [general] must be a table"))
     for name in preferences:
         if name in general:
             preferences[name] = general[name]
     workspace = preferences["default_workspace"]
     grace_ms = preferences["human_priority_grace_ms"]
     eye_hud = preferences["eye_hud"]
+    language = preferences["language"]
     if not isinstance(workspace, int) or isinstance(workspace, bool) or workspace < 1:
-        raise AgentSeatError("general.default_workspace must be a positive integer")
+        raise AgentSeatError(_("general.default_workspace must be a positive integer"))
     if not isinstance(grace_ms, int) or isinstance(grace_ms, bool) or not 0 <= grace_ms <= 60_000:
-        raise AgentSeatError("general.human_priority_grace_ms must be an integer from 0 to 60000")
+        raise AgentSeatError(_("general.human_priority_grace_ms must be an integer from 0 to 60000"))
     if not isinstance(eye_hud, bool):
-        raise AgentSeatError("general.eye_hud must be true or false")
+        raise AgentSeatError(_("general.eye_hud must be true or false"))
+    if not isinstance(language, str):
+        raise AgentSeatError(_("general.language must be auto, en, zh-CN, or zh-TW"))
+    if language.casefold() != "auto":
+        base = language.split(".", 1)[0].split("@", 1)[0]
+        if base.casefold() not in SUPPORTED_LANGUAGES:
+            raise AgentSeatError(_("general.language must be auto, en, zh-CN, or zh-TW"))
+        preferences["language"] = LANGUAGE_NAMES[SUPPORTED_LANGUAGES[base.casefold()]]
     return preferences
 
 
@@ -142,6 +297,8 @@ def configuration_status() -> dict[str, Any]:
         "path": str(CONFIG_FILE),
         "exists": CONFIG_FILE.is_file(),
         "effective": dict(PREFERENCES),
+        "resolved_language": LANGUAGE_NAMES[CURRENT_LANGUAGE],
+        "locale_dir": str(CURRENT_LOCALE_DIR) if CURRENT_LOCALE_DIR else None,
     }
 
 
@@ -194,7 +351,7 @@ def proc_exe(pid: int) -> str:
 def host_instance() -> dict[str, Any]:
     candidates = instances()
     if not candidates:
-        raise AgentSeatError("host Hyprland instance not found")
+        raise AgentSeatError(_("host Hyprland instance not found"))
     signature = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
     return next((item for item in candidates if item["instance"] == signature), candidates[0])
 
@@ -251,7 +408,7 @@ def host_focus_relation(before: dict[str, Any], after: dict[str, Any], outer_win
 
 def launch_window_properties(host_workspace: int, active_workspace: int | None) -> str:
     if host_workspace <= 0:
-        raise AgentSeatError("host workspace must be a positive integer")
+        raise AgentSeatError(_("host workspace must be a positive integer"))
     properties = [
         "no_initial_focus true",
         "focus_on_activate false",
@@ -339,21 +496,21 @@ def rpc(method: str, params: dict[str, Any] | None = None) -> Any:
                     break
                 received.extend(block)
                 if len(received) > RPC_LIMIT:
-                    raise AgentSeatError("AgentSeat daemon response exceeds 1 MiB")
+                    raise AgentSeatError(_("AgentSeat daemon response exceeds 1 MiB"))
     except OSError as exc:
-        raise AgentSeatError(f"cannot reach AgentSeat daemon: {exc}") from exc
+        raise AgentSeatError(_("cannot reach AgentSeat daemon: {error}").format(error=exc)) from exc
     if not received:
-        raise AgentSeatError("AgentSeat daemon returned no response")
+        raise AgentSeatError(_("AgentSeat daemon returned no response"))
     try:
         response = json.loads(bytes(received).split(b"\n", 1)[0])
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise AgentSeatError(f"invalid AgentSeat daemon response: {exc}") from exc
+        raise AgentSeatError(_("invalid AgentSeat daemon response: {error}").format(error=exc)) from exc
     if response.get("id") != request_id:
-        raise AgentSeatError("AgentSeat daemon response ID mismatch")
+        raise AgentSeatError(_("AgentSeat daemon response ID mismatch"))
     if "error" in response:
         error = response["error"]
         code = error.get("code", "AGENTSEAT_ERROR")
-        message = error.get("message", "AgentSeat daemon rejected the request")
+        message = error.get("message", _("AgentSeat daemon rejected the request"))
         raise AgentSeatError(f"{code}: {message}")
     return response.get("result")
 
@@ -383,7 +540,7 @@ def normalize_argv(values: list[str]) -> list[str]:
     if argv and argv[0] == "--":
         argv.pop(0)
     if not argv or any(not value or "\0" in value for value in argv):
-        raise AgentSeatError("run requires a non-empty command after --")
+        raise AgentSeatError(_("run requires a non-empty command after --"))
     return argv
 
 
@@ -392,13 +549,13 @@ def normalized_cwd(value: str | None) -> str | None:
         return None
     path = Path(value).expanduser().resolve()
     if not path.is_dir():
-        raise AgentSeatError(f"working directory does not exist: {path}")
+        raise AgentSeatError(_("working directory does not exist: {path}").format(path=path))
     return str(path)
 
 
 def write_launch_spec(argv: list[str], mode: str, cwd: str | None) -> None:
     if mode not in {"wayland", "x11"}:
-        raise AgentSeatError(f"unsupported display mode: {mode}")
+        raise AgentSeatError(_("unsupported display mode: {mode}").format(mode=mode))
     payload = {
         "version": 1,
         "argv": argv,
@@ -429,7 +586,7 @@ def load_application_env() -> dict[str, str] | None:
 def legacy_command(preset: str) -> tuple[list[str], str, str | None]:
     if preset == "onlyoffice":
         return ["/usr/bin/onlyoffice-desktopeditors"], "wayland", "onlyoffice-native-wayland"
-    raise AgentSeatError(f"unknown legacy preset: {preset}")
+    raise AgentSeatError(_("unknown legacy preset: {preset}").format(preset=preset))
 
 
 def sync_window_tree(*, focus_newest: bool = True) -> list[dict[str, Any]]:
@@ -463,9 +620,11 @@ def start_application(
             return status()
         if current_argv == argv:
             return status()
-        raise AgentSeatError("AgentSeat is already running another application; stop it before launching a different command")
+        raise AgentSeatError(
+            _("AgentSeat is already running another application; stop it before launching a different command")
+        )
     if existing:
-        raise AgentSeatError("an unmanaged AgentSeat micro-host is already running; run agentseat stop first")
+        raise AgentSeatError(_("an unmanaged AgentSeat micro-host is already running; run agentseat stop first"))
 
     host = host_instance()
     before = host_snapshot(host)
@@ -488,26 +647,39 @@ def start_application(
         "hyprctl", "--instance", str(host["instance"]), "dispatch", "exec",
         f"{launch_properties} env AGENTSEAT_HOST_SCALE={host_scale:.6g} AGENTSEAT_PHYSICAL_LAYOUT=1 {RUN_MICROHOST}",
     ])
-    microhost = wait_for(microhost_pid, 12, "AgentSeat micro-host did not appear")
+    microhost = wait_for(microhost_pid, 12, _("AgentSeat micro-host did not appear"))
     outer = wait_for(
         lambda: host_client_for_pid(str(host["instance"]), int(microhost)),
         8,
-        "outer AgentSeat window did not appear",
+        _("outer AgentSeat window did not appear"),
     )
     if int(outer.get("workspace", {}).get("id", -1)) != host_workspace:
-        raise AgentSeatError(f"AgentSeat outer window did not map on requested workspace {host_workspace}")
+        raise AgentSeatError(
+            _("AgentSeat outer window did not map on requested workspace {workspace}").format(
+                workspace=host_workspace
+            )
+        )
     if not NATIVE_DAEMON.is_file() or not os.access(NATIVE_DAEMON, os.X_OK):
-        raise AgentSeatError(f"native AgentSeat daemon is missing or not executable: {NATIVE_DAEMON}")
+        raise AgentSeatError(
+            _("native AgentSeat daemon is missing or not executable: {path}").format(path=NATIVE_DAEMON)
+        )
     if not GRIM.is_file() or not os.access(GRIM, os.X_OK):
-        raise AgentSeatError(f"native wlr-screencopy client is missing or not executable: {GRIM}")
-    app_environment = wait_for(load_application_env, 8, "AgentSeat application environment receipt did not appear")
-    wait_for(MICROHOST_READY.exists, 12, "application did not map in the AgentSeat micro-host")
+        raise AgentSeatError(
+            _("native wlr-screencopy client is missing or not executable: {path}").format(path=GRIM)
+        )
+    app_environment = wait_for(
+        load_application_env, 8, _("AgentSeat application environment receipt did not appear")
+    )
+    wait_for(MICROHOST_READY.exists, 12, _("application did not map in the AgentSeat micro-host"))
     daemon_log = open_private_log(LOG_DIR / "daemon.log")
     env = dict(os.environ)
     env.update({
         "XDG_RUNTIME_DIR": str(USER_RUNTIME_DIR),
         "WAYLAND_DISPLAY": app_environment["wayland_display"],
+        "AGENTSEAT_LANGUAGE": CURRENT_LANGUAGE,
     })
+    if CURRENT_LOCALE_DIR:
+        env["AGENTSEAT_LOCALE_DIR"] = str(CURRENT_LOCALE_DIR)
     daemon_argv = [
         str(NATIVE_DAEMON),
         "--socket", str(CONTROL_SOCKET),
@@ -531,9 +703,9 @@ def start_application(
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
-    wait_for(CONTROL_SOCKET.exists, 8, "AgentSeat daemon socket did not appear")
+    wait_for(CONTROL_SOCKET.exists, 8, _("AgentSeat daemon socket did not appear"))
     rpc("seat.create", {"workspace": host_workspace})
-    windows = wait_for(lambda: rpc("window.list") or None, 8, "application window did not appear")
+    windows = wait_for(lambda: rpc("window.list") or None, 8, _("application window did not appear"))
     window = windows[0]
     rpc("window.lease", {"window_id": str(window["id"])})
     rpc("window.focus", {"window_id": str(window["id"])})
@@ -549,7 +721,11 @@ def start_application(
         restored_outer_focus = True
         after = host_snapshot(host)
     if relation == "outer-focused" and not same_host_focus(before, after):
-        raise AgentSeatError(f"host focus isolation failed: before={before!r} after={after!r}")
+        raise AgentSeatError(
+            _("host focus isolation failed: before={before!r} after={after!r}").format(
+                before=before, after=after
+            )
+        )
     state_value = {
         "launch": {"argv": argv, "mode": mode, "cwd": cwd},
         "host_instance": host["instance"],
@@ -629,16 +805,18 @@ def start_hud() -> dict[str, Any]:
     if existing:
         return {"running": True, "pid": existing, "connected": CONTROL_SOCKET.exists()}
     if not EYE_BINARY.is_file() or not os.access(EYE_BINARY, os.X_OK):
-        raise AgentSeatError(f"native AgentSeat eye HUD is missing or not executable: {EYE_BINARY}")
+        raise AgentSeatError(
+            _("native AgentSeat eye HUD is missing or not executable: {path}").format(path=EYE_BINARY)
+        )
     state_value = load_state()
     if not microhost_pid() or not CONTROL_SOCKET.exists():
-        raise AgentSeatError("AgentSeat must be running before its embedded AI head can start")
+        raise AgentSeatError(_("AgentSeat must be running before its embedded AI head can start"))
     wayland_display = state_value.get("wayland_display")
     if not isinstance(wayland_display, str) or not wayland_display:
         application_env = load_application_env()
         wayland_display = application_env["wayland_display"] if application_env else None
     if not wayland_display:
-        raise AgentSeatError("AgentSeat private Wayland display is unavailable")
+        raise AgentSeatError(_("AgentSeat private Wayland display is unavailable"))
     environment = dict(os.environ)
     environment.update({
         "XDG_RUNTIME_DIR": str(USER_RUNTIME_DIR),
@@ -648,7 +826,10 @@ def start_hud() -> dict[str, Any]:
         # GL renderer loads a full software-GL stack inside the pixman
         # micro-host for no visual benefit.
         "GSK_RENDERER": "cairo",
+        "AGENTSEAT_LANGUAGE": CURRENT_LANGUAGE,
     })
+    if CURRENT_LOCALE_DIR:
+        environment["AGENTSEAT_LOCALE_DIR"] = str(CURRENT_LOCALE_DIR)
     environment.pop("DISPLAY", None)
     environment.pop("HYPRLAND_INSTANCE_SIGNATURE", None)
     eye_log = open_private_log(LOG_DIR / "eye.log")
@@ -664,7 +845,9 @@ def start_hud() -> dict[str, Any]:
     os.chmod(EYE_PID, 0o600)
     time.sleep(0.35)
     if eye.poll() is not None:
-        raise AgentSeatError(f"AgentSeat eye HUD exited during startup; inspect {LOG_DIR / 'eye.log'}")
+        raise AgentSeatError(
+            _("AgentSeat eye HUD exited during startup; inspect {path}").format(path=LOG_DIR / "eye.log")
+        )
     return {
         "running": True,
         "pid": eye.pid,
@@ -682,7 +865,7 @@ def stop_hud() -> dict[str, Any]:
             os.kill(hud_pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-        wait_for(lambda: eye_pid() is None, 5, "AgentSeat eye HUD did not stop")
+        wait_for(lambda: eye_pid() is None, 5, _("AgentSeat eye HUD did not stop"))
     try:
         EYE_PID.unlink()
     except FileNotFoundError:
@@ -702,12 +885,18 @@ def stop() -> dict[str, Any]:
         except AgentSeatError:
             pass
     if daemon_pids:
-        wait_for(lambda: all(not Path(f"/proc/{pid}").exists() for pid in daemon_pids), 5, "daemon did not stop")
+        wait_for(
+            lambda: all(not Path(f"/proc/{pid}").exists() for pid in daemon_pids),
+            5,
+            _("daemon did not stop"),
+        )
     for socket_path in (CONTROL_SOCKET, ACTIVITY_SOCKET):
         if socket_path.exists():
             socket_stat = socket_path.lstat()
             if not stat.S_ISSOCK(socket_stat.st_mode) or socket_stat.st_uid != os.getuid():
-                raise AgentSeatError(f"refusing to remove an unexpected AgentSeat socket: {socket_path}")
+                raise AgentSeatError(
+                    _("refusing to remove an unexpected AgentSeat socket: {path}").format(path=socket_path)
+                )
             socket_path.unlink()
     microhost = microhost_pid()
     if microhost:
@@ -715,7 +904,7 @@ def stop() -> dict[str, Any]:
             os.kill(microhost, 15)
         except ProcessLookupError:
             pass
-        wait_for(lambda: microhost_pid() is None, 8, "AgentSeat micro-host did not stop")
+        wait_for(lambda: microhost_pid() is None, 8, _("AgentSeat micro-host did not stop"))
     try:
         STATE.unlink()
     except FileNotFoundError:
@@ -755,7 +944,7 @@ def onlyoffice_paste(text: str) -> dict[str, Any]:
     state_value = load_state()
     display = state_value.get("x_display")
     if not display:
-        raise AgentSeatError("private X display is unavailable")
+        raise AgentSeatError(_("private X display is unavailable"))
     seat = rpc("seat.status")["seat"]
     x = float(seat["pointer_x"])
     y = float(seat["pointer_y"])
@@ -763,7 +952,7 @@ def onlyoffice_paste(text: str) -> dict[str, Any]:
     focused_id = str(seat.get("focused_window"))
     window = next((item for item in windows if str(item["id"]) == focused_id), windows[0] if windows else None)
     if not window:
-        raise AgentSeatError("no OnlyOffice window is available")
+        raise AgentSeatError(_("no OnlyOffice window is available"))
     encoded = base64.b64encode(text.encode()).decode()
     owner = subprocess.Popen(
         [str(CLIPBOARD_OWNER), "--display", str(display), encoded],
@@ -776,7 +965,7 @@ def onlyoffice_paste(text: str) -> dict[str, Any]:
         ready = owner.stdout.readline().strip() if owner.stdout else ""
         if ready != "READY":
             error = owner.stderr.read().strip() if owner.stderr else ""
-            raise AgentSeatError(error or "private X clipboard owner failed")
+            raise AgentSeatError(error or _("private X clipboard owner failed"))
         pointer_click(273)
         time.sleep(0.6)
         xenv = {**os.environ, "DISPLAY": str(display)}
@@ -795,7 +984,7 @@ def onlyoffice_paste(text: str) -> dict[str, Any]:
                 paste_word = row
                 break
         if not paste_word:
-            raise AgentSeatError("OnlyOffice Paste menu item was not visually detected")
+            raise AgentSeatError(_("OnlyOffice Paste menu item was not visually detected"))
         paste_x = (
             geometry.get("X", 0) + int(paste_word["left"]) + int(paste_word["width"]) / 2.0
         ) / float(window["width"])
@@ -822,10 +1011,12 @@ def private_unicode_paste(text: str) -> dict[str, Any]:
     state_value = load_state()
     wayland_display = state_value.get("wayland_display")
     if not isinstance(wayland_display, str) or not wayland_display:
-        raise AgentSeatError("private Wayland display is unavailable")
+        raise AgentSeatError(_("private Wayland display is unavailable"))
     for helper in (WL_COPY, WL_PASTE):
         if not helper.is_file() or not os.access(helper, os.X_OK):
-            raise AgentSeatError(f"private Unicode clipboard helper is unavailable: {helper}")
+            raise AgentSeatError(
+                _("private Unicode clipboard helper is unavailable: {path}").format(path=helper)
+            )
 
     environment = dict(os.environ)
     environment["XDG_RUNTIME_DIR"] = str(USER_RUNTIME_DIR)
@@ -841,7 +1032,7 @@ def private_unicode_paste(text: str) -> dict[str, Any]:
     )
     try:
         if owner.stdin is None:
-            raise AgentSeatError("private clipboard input pipe is unavailable")
+            raise AgentSeatError(_("private clipboard input pipe is unavailable"))
         owner.stdin.write(text)
         owner.stdin.close()
 
@@ -851,7 +1042,7 @@ def private_unicode_paste(text: str) -> dict[str, Any]:
             probe = run([str(WL_PASTE), "--list-types"], env=environment, check=False)
             return probe.returncode == 0 and "text/plain" in probe.stdout
 
-        wait_for(clipboard_ready, 2, "private AgentSeat clipboard did not become ready")
+        wait_for(clipboard_ready, 2, _("private AgentSeat clipboard did not become ready"))
         # evdev KEY_LEFTCTRL=29 and KEY_V=47. These events are delivered only
         # through the micro-host virtual keyboard, never through the host seat.
         rpc("keyboard.key", {"keycode": 29, "pressed": True})
@@ -861,10 +1052,10 @@ def private_unicode_paste(text: str) -> dict[str, Any]:
         try:
             returncode = owner.wait(timeout=3)
         except subprocess.TimeoutExpired as exc:
-            raise AgentSeatError("application did not request the private AgentSeat clipboard") from exc
+            raise AgentSeatError(_("application did not request the private AgentSeat clipboard")) from exc
         if returncode != 0:
             error = owner.stderr.read().strip() if owner.stderr else ""
-            raise AgentSeatError(error or "private AgentSeat clipboard transfer failed")
+            raise AgentSeatError(error or _("private AgentSeat clipboard transfer failed"))
     finally:
         for keycode in (47, 29):
             try:
@@ -884,18 +1075,18 @@ def private_unicode_paste(text: str) -> dict[str, Any]:
 def safe_capture_path(path: Path) -> Path:
     candidate = path.expanduser()
     if not candidate.is_absolute() or candidate.suffix.casefold() != ".png":
-        raise AgentSeatError("capture output must be an absolute .png path")
+        raise AgentSeatError(_("capture output must be an absolute .png path"))
     try:
         parent = candidate.parent.resolve(strict=True)
     except OSError as exc:
-        raise AgentSeatError(f"capture output parent is unavailable: {exc}") from exc
+        raise AgentSeatError(_("capture output parent is unavailable: {error}").format(error=exc)) from exc
     if not parent.is_dir() or parent.stat().st_uid != os.getuid():
-        raise AgentSeatError("capture output parent must be a directory owned by the current user")
+        raise AgentSeatError(_("capture output parent must be a directory owned by the current user"))
     output = parent / candidate.name
     if output.is_symlink():
-        raise AgentSeatError("capture output cannot be a symbolic link")
+        raise AgentSeatError(_("capture output cannot be a symbolic link"))
     if output.exists() and (not output.is_file() or output.stat().st_uid != os.getuid()):
-        raise AgentSeatError("existing capture output must be a regular file owned by the current user")
+        raise AgentSeatError(_("existing capture output must be a regular file owned by the current user"))
     return output
 
 
@@ -906,7 +1097,7 @@ def observe(path: str | None) -> dict[str, Any]:
     focused_id = str(seat_status["seat"].get("focused_window") or state_value.get("window_id") or "")
     window = next((item for item in windows if str(item["id"]) == focused_id), windows[0] if windows else None)
     if not window:
-        raise AgentSeatError("no leased application window is available")
+        raise AgentSeatError(_("no leased application window is available"))
     ensure_private_directory(EVIDENCE)
     output = safe_capture_path(Path(path) if path else EVIDENCE / f"agentseat-{int(time.time())}.png")
     temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp.png")
@@ -919,7 +1110,7 @@ def observe(path: str | None) -> dict[str, Any]:
     def capture_pass() -> None:
         host_pid = microhost_pid()
         if not host_pid:
-            raise AgentSeatError("AgentSeat micro-host exited before capture")
+            raise AgentSeatError(_("AgentSeat micro-host exited before capture"))
         process = subprocess.Popen(
             [str(GRIM), "-t", "png", str(temporary)],
             env=capture_env,
@@ -935,9 +1126,9 @@ def observe(path: str | None) -> dict[str, Any]:
         except (ProcessLookupError, subprocess.TimeoutExpired) as exc:
             process.terminate()
             process.communicate(timeout=2)
-            raise AgentSeatError(f"micro-host screencopy did not complete: {exc}") from exc
+            raise AgentSeatError(_("micro-host screencopy did not complete: {error}").format(error=exc)) from exc
         if process.returncode:
-            raise AgentSeatError(stderr.strip() or stdout.strip() or "native wlr-screencopy failed")
+            raise AgentSeatError(stderr.strip() or stdout.strip() or _("native wlr-screencopy failed"))
 
     try:
         # An inactive host workspace can throttle the nested client's frame
@@ -982,50 +1173,81 @@ def reply_message(text: str) -> dict[str, Any]:
 
 def main() -> int:
     global PREFERENCES
+    cli_language = language_override(sys.argv[1:])
+    configure_i18n(cli_language or os.environ.get("AGENTSEAT_LANGUAGE", "auto"))
     PREFERENCES = load_preferences()
-    parser = argparse.ArgumentParser(prog="agentseat")
+    configure_i18n(
+        cli_language
+        or os.environ.get("AGENTSEAT_LANGUAGE")
+        or str(PREFERENCES["language"])
+    )
+    argparse._ = _
+    parser = argparse.ArgumentParser(
+        prog="agentseat",
+        description=_("Operate one local application with a private AI pointer and keyboard."),
+    )
+    parser.add_argument(
+        "--language",
+        type=language_option,
+        metavar="LANG",
+        help=_("interface language: auto, en, zh-CN, or zh-TW"),
+    )
     commands = parser.add_subparsers(dest="command", required=True)
-    start_parser = commands.add_parser("start", help="start a legacy verified demo")
+    start_parser = commands.add_parser("start", help=_("start a legacy verified demo"))
     start_parser.add_argument("preset", choices=("onlyoffice",), nargs="?", default="onlyoffice")
-    start_parser.add_argument("--host-workspace", type=int, default=PREFERENCES["default_workspace"])
-    run_parser = commands.add_parser("run", help="wrap an arbitrary application command")
-    run_parser.add_argument("--x11", action="store_true", help="force the generic private-XWayland compatibility lane")
-    run_parser.add_argument("--cwd")
-    run_parser.add_argument("--host-workspace", type=int, default=PREFERENCES["default_workspace"])
-    run_parser.add_argument("argv", nargs=argparse.REMAINDER)
-    commands.add_parser("version")
-    commands.add_parser("paths", help="show AgentSeat's XDG storage locations")
-    commands.add_parser("config", help="show the effective AgentSeat configuration")
-    commands.add_parser("status")
-    hud_parser = commands.add_parser("hud", help="control the embedded private-microhost AI head")
+    start_parser.add_argument(
+        "--host-workspace",
+        type=int,
+        default=PREFERENCES["default_workspace"],
+        help=_("place the outer window on this host workspace"),
+    )
+    run_parser = commands.add_parser("run", help=_("wrap an arbitrary application command"))
+    run_parser.add_argument(
+        "--x11",
+        action="store_true",
+        help=_("force the generic private-XWayland compatibility lane"),
+    )
+    run_parser.add_argument("--cwd", help=_("working directory for the wrapped application"))
+    run_parser.add_argument(
+        "--host-workspace",
+        type=int,
+        default=PREFERENCES["default_workspace"],
+        help=_("place the outer window on this host workspace"),
+    )
+    run_parser.add_argument("argv", nargs=argparse.REMAINDER, help=_("application command after --"))
+    commands.add_parser("version", help=_("show the controller and protocol version"))
+    commands.add_parser("paths", help=_("show AgentSeat's XDG storage locations"))
+    commands.add_parser("config", help=_("show the effective AgentSeat configuration"))
+    commands.add_parser("status", help=_("show the current AgentSeat session"))
+    hud_parser = commands.add_parser("hud", help=_("control the embedded private-microhost AI head"))
     hud_parser.add_argument("action", choices=("start", "stop", "status"))
-    commands.add_parser("collaboration", help="show human-priority and AI activity state")
-    activity_parser = commands.add_parser("activity", help="publish the Agent's current AgentSeat action")
+    commands.add_parser("collaboration", help=_("show human-priority and AI activity state"))
+    activity_parser = commands.add_parser("activity", help=_("publish the Agent's current AgentSeat action"))
     activity_parser.add_argument("summary")
     activity_parser.add_argument("--detail", default="")
-    messages_parser = commands.add_parser("messages", help="read messages sent from the eye HUD")
+    messages_parser = commands.add_parser("messages", help=_("read messages sent from the eye HUD"))
     messages_parser.add_argument("--after", type=int, default=0)
-    reply_parser = commands.add_parser("reply", help="reply to the human in the eye HUD")
+    reply_parser = commands.add_parser("reply", help=_("reply to the human in the eye HUD"))
     reply_parser.add_argument("text")
-    commands.add_parser("windows")
-    commands.add_parser("pause")
-    commands.add_parser("resume")
-    move_parser = commands.add_parser("move")
+    commands.add_parser("windows", help=_("list windows in the wrapped application tree"))
+    commands.add_parser("pause", help=_("pause Agent input"))
+    commands.add_parser("resume", help=_("resume Agent input"))
+    move_parser = commands.add_parser("move", help=_("move the private pointer using normalized coordinates"))
     move_parser.add_argument("x", type=float)
     move_parser.add_argument("y", type=float)
-    click_parser = commands.add_parser("click")
+    click_parser = commands.add_parser("click", help=_("click with the private pointer"))
     click_parser.add_argument("button", type=int, nargs="?", default=272)
-    scroll_parser = commands.add_parser("scroll")
+    scroll_parser = commands.add_parser("scroll", help=_("scroll inside the wrapped application"))
     scroll_parser.add_argument("axis", choices=("vertical", "horizontal"))
     scroll_parser.add_argument("value120", type=int)
-    key_parser = commands.add_parser("key", help="send one scoped evdev key event")
+    key_parser = commands.add_parser("key", help=_("send one scoped evdev key event"))
     key_parser.add_argument("keycode", type=int)
     key_parser.add_argument("state", choices=("down", "up"))
-    type_parser = commands.add_parser("type")
+    type_parser = commands.add_parser("type", help=_("type text with the private keyboard"))
     type_parser.add_argument("text")
-    observe_parser = commands.add_parser("observe")
+    observe_parser = commands.add_parser("observe", help=_("capture the private application output"))
     observe_parser.add_argument("path", nargs="?")
-    commands.add_parser("stop")
+    commands.add_parser("stop", help=_("stop the current AgentSeat session"))
     args = parser.parse_args()
 
     if args.command == "start":
@@ -1110,7 +1332,7 @@ def main() -> int:
     elif args.command == "stop":
         result = stop()
     else:
-        raise AgentSeatError("unknown command")
+        raise AgentSeatError(_("unknown command"))
     output_json(result)
     return 0
 

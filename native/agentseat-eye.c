@@ -16,6 +16,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "agentseat-i18n.h"
+
 #define RPC_LIMIT (1024U * 1024U)
 #define COLLAPSED_SIZE 52
 #define HEAD_DRAW_SIZE 46
@@ -386,7 +388,7 @@ static void set_expanded(bool expanded) {
     if (app_state.head_area) {
         set_accessible_label(
             app_state.head_area,
-            expanded ? "收起 AgentSeat AI" : "展开 AgentSeat AI 小脑袋");
+            expanded ? AS_TR("Collapse AgentSeat AI") : AS_TR("Expand the AgentSeat AI head"));
     }
     GtkWidget* current = expanded ? app_state.panel_root : app_state.eye_root;
     GtkWidget* previous = expanded ? app_state.eye_root : app_state.panel_root;
@@ -496,14 +498,16 @@ static void send_message(void) {
         return;
     if (app_state.demo) {
         add_message_bubble("human", text);
-        add_message_bubble("agent", "收到。正式模式下，正在操作应用的 Agent 会从这里读取并回复。");
+        add_message_bubble(
+            "agent",
+            AS_TR("Got it. In a live session, the Agent operating this app reads and replies here."));
     } else {
         json_object* params = json_object_new_object();
         json_object_object_add(params, "text", json_object_new_string(text));
         json_object* result = rpc_call("chat.send", params);
         json_object_put(params);
         if (!result) {
-            gtk_label_set_text(GTK_LABEL(app_state.state_label), "连接暂时不可用");
+            gtk_label_set_text(GTK_LABEL(app_state.state_label), AS_TR("Connection temporarily unavailable"));
             return;
         }
         json_object_put(result);
@@ -530,7 +534,7 @@ static gboolean poll_state(gpointer data) {
     json_object* status = rpc_call("collaboration.status", NULL);
     if (status) {
         json_object* value = NULL;
-        const char* summary = "等待 Agent";
+        const char* summary = AS_TR("Waiting for Agent");
         const char* detail = "";
         bool human_active = false;
         if (json_object_object_get_ex(status, "activity_summary", &value))
@@ -541,13 +545,19 @@ static gboolean poll_state(gpointer data) {
             human_active = json_object_get_boolean(value);
         if (json_object_object_get_ex(status, "agent_allowed", &value)) {
             bool allowed = json_object_get_boolean(value);
-            gtk_label_set_text(GTK_LABEL(app_state.state_label), human_active ? "你正在操作 · AI 已让路" : (allowed ? "AI 可操作" : "AI 已暂停"));
+            gtk_label_set_text(
+                GTK_LABEL(app_state.state_label),
+                human_active
+                    ? AS_TR("You're in control · AI stepped aside")
+                    : (allowed ? AS_TR("AI can operate") : AS_TR("AI is paused")));
         }
-        gtk_label_set_text(GTK_LABEL(app_state.activity_label), summary && summary[0] ? summary : "等待 Agent");
+        gtk_label_set_text(
+            GTK_LABEL(app_state.activity_label),
+            summary && summary[0] ? summary : AS_TR("Waiting for Agent"));
         gtk_label_set_text(GTK_LABEL(app_state.detail_label), detail ? detail : "");
         json_object_put(status);
     } else {
-        gtk_label_set_text(GTK_LABEL(app_state.state_label), "正在等待 AgentSeat");
+        gtk_label_set_text(GTK_LABEL(app_state.state_label), AS_TR("Waiting for AgentSeat"));
     }
 
     json_object* params = json_object_new_object();
@@ -614,12 +624,14 @@ static GtkWidget* build_panel(void) {
     gtk_widget_set_margin_start(content, 26);
     gtk_widget_set_margin_end(content, 7);
 
-    app_state.state_label = gtk_label_new(app_state.demo ? "AI 可操作" : "正在连接");
+    app_state.state_label = gtk_label_new(
+        app_state.demo ? AS_TR("AI can operate") : AS_TR("Connecting"));
     gtk_label_set_xalign(GTK_LABEL(app_state.state_label), 0.0f);
     gtk_widget_add_css_class(app_state.state_label, "status-whisper");
     gtk_box_append(GTK_BOX(content), app_state.state_label);
 
-    app_state.activity_label = gtk_label_new(app_state.demo ? "正在检查文档里的表格布局" : "等待 Agent");
+    app_state.activity_label = gtk_label_new(
+        app_state.demo ? AS_TR("Reviewing the table layout") : AS_TR("Waiting for Agent"));
     gtk_label_set_xalign(GTK_LABEL(app_state.activity_label), 0.0f);
     gtk_label_set_wrap(GTK_LABEL(app_state.activity_label), true);
     gtk_label_set_lines(GTK_LABEL(app_state.activity_label), 2);
@@ -628,7 +640,10 @@ static GtkWidget* build_panel(void) {
     gtk_widget_set_margin_top(app_state.activity_label, 11);
     gtk_box_append(GTK_BOX(content), app_state.activity_label);
 
-    app_state.detail_label = gtk_label_new(app_state.demo ? "只在 AgentSeat 应用内点击；你一动手，AI 会自动暂停。" : "");
+    app_state.detail_label = gtk_label_new(
+        app_state.demo
+            ? AS_TR("AgentSeat clicks only inside this app. When you take over, AI pauses automatically.")
+            : "");
     gtk_label_set_xalign(GTK_LABEL(app_state.detail_label), 0.0f);
     gtk_label_set_wrap(GTK_LABEL(app_state.detail_label), true);
     gtk_label_set_lines(GTK_LABEL(app_state.detail_label), 2);
@@ -651,8 +666,10 @@ static GtkWidget* build_panel(void) {
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), app_state.messages_box);
     gtk_box_append(GTK_BOX(content), scroll);
     if (app_state.demo) {
-        add_message_bubble("agent", "我正在核对第 3 页的表格边距，还没有改动正文。");
-        add_message_bubble("human", "先把表头对齐，正文等我确认。 ");
+        add_message_bubble(
+            "agent", AS_TR("I'm checking the table margins on page 3. The body is unchanged."));
+        add_message_bubble(
+            "human", AS_TR("Align the header first. Wait for my confirmation before changing the body."));
     }
 
     GtkWidget* conversation = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -672,14 +689,14 @@ static GtkWidget* build_panel(void) {
     g_signal_connect(app_state.entry, "notify::cursor", G_CALLBACK(entry_cursor_changed), NULL);
     if (app_state.arrow_cursor)
         gtk_widget_set_cursor(app_state.entry, app_state.arrow_cursor);
-    gtk_text_set_placeholder_text(GTK_TEXT(app_state.entry), "告诉 AI 接下来做什么…");
+    gtk_text_set_placeholder_text(GTK_TEXT(app_state.entry), AS_TR("Tell AI what to do next…"));
     gtk_text_set_propagate_text_width(GTK_TEXT(app_state.entry), false);
     gtk_text_set_truncate_multiline(GTK_TEXT(app_state.entry), true);
     gtk_widget_set_hexpand(app_state.entry, true);
-    set_accessible_label(app_state.entry, "给 AgentSeat AI 发消息");
+    set_accessible_label(app_state.entry, AS_TR("Message AgentSeat AI"));
     g_signal_connect(app_state.entry, "activate", G_CALLBACK(entry_activate), NULL);
     GtkWidget* send = make_button("↑", "send-button", G_CALLBACK(send_clicked), NULL);
-    set_accessible_label(send, "发送消息");
+    set_accessible_label(send, AS_TR("Send message"));
     gtk_box_append(GTK_BOX(composer), app_state.entry);
     gtk_box_append(GTK_BOX(composer), send);
     gtk_widget_set_hexpand(composer, true);
@@ -754,7 +771,10 @@ static void activate(GtkApplication* application, gpointer data) {
     gtk_window_set_resizable(app_state.window, false);
     if (!app_state.demo && !app_state.embedded) {
         if (!gtk_layer_is_supported()) {
-            fprintf(stderr, "agentseat-eye: host compositor does not support layer shell\n");
+            fprintf(
+                stderr,
+                "agentseat-eye: %s\n",
+                AS_TR("host compositor does not support layer shell"));
             g_application_quit(G_APPLICATION(application));
             return;
         }
@@ -796,7 +816,7 @@ static void activate(GtkApplication* application, gpointer data) {
 
     GtkWidget* hud_root = gtk_overlay_new();
     gtk_overlay_set_child(GTK_OVERLAY(hud_root), app_state.stack);
-    app_state.head_area = build_head_button("展开 AgentSeat AI 小脑袋");
+    app_state.head_area = build_head_button(AS_TR("Expand the AgentSeat AI head"));
     gtk_widget_set_halign(app_state.head_area, GTK_ALIGN_END);
     gtk_widget_set_valign(app_state.head_area, GTK_ALIGN_END);
     gtk_overlay_add_overlay(GTK_OVERLAY(hud_root), app_state.head_area);
@@ -814,6 +834,7 @@ static void activate(GtkApplication* application, gpointer data) {
 }
 
 int main(int argc, char** argv) {
+    agentseat_i18n_init();
     const char* runtime = getenv("XDG_RUNTIME_DIR");
     if (!runtime)
         runtime = "/tmp";
@@ -829,7 +850,10 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--render-head") == 0 && i + 1 < argc) {
             render_head_path = argv[++i];
         } else {
-            fprintf(stderr, "usage: %s [--socket PATH] [--demo] [--embedded] [--render-head PNG]\n", argv[0]);
+            fprintf(
+                stderr,
+                AS_TR("usage: %s [--socket PATH] [--demo] [--embedded] [--render-head PNG]\n"),
+                argv[0]);
             return 2;
         }
     }
@@ -847,7 +871,10 @@ int main(int argc, char** argv) {
         cairo_status_t status = cairo_surface_write_to_png(surface, render_head_path);
         cairo_surface_destroy(surface);
         if (status != CAIRO_STATUS_SUCCESS) {
-            fprintf(stderr, "agentseat-eye: cannot render head: %s\n", cairo_status_to_string(status));
+            fprintf(
+                stderr,
+                AS_TR("agentseat-eye: cannot render head: %s\n"),
+                cairo_status_to_string(status));
             return 1;
         }
         return 0;

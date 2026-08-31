@@ -1,4 +1,8 @@
 [general]
+# UI and human-readable CLI language: auto, en, zh-CN, or zh-TW.
+# auto follows LANGUAGE, LC_ALL, LC_MESSAGES, then LANG.
+language = "auto"
+
 # Host workspace used when --host-workspace is omitted.
 default_workspace = 1
 

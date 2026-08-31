@@ -33,6 +33,7 @@ agentseat_protocol(wlr-virtual-pointer-unstable-v1)
 
 add_executable(agentseatd
   agentseatd.c
+  agentseat-i18n.c
   agentseat-input.c
   ${AGENTSEAT_PROTOCOL_SOURCES}
   ${AGENTSEAT_PROTOCOL_HEADERS}
@@ -41,7 +42,7 @@ target_include_directories(agentseatd PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(agentseatd PRIVATE PkgConfig::JSONC PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
 target_compile_options(agentseatd PRIVATE -Wall -Wextra -Wpedantic -Werror=implicit-function-declaration)
 
-add_executable(agentseat-eye agentseat-eye.c)
+add_executable(agentseat-eye agentseat-eye.c agentseat-i18n.c)
 target_link_libraries(agentseat-eye PRIVATE PkgConfig::GTK4_LAYER_SHELL PkgConfig::GTK4 PkgConfig::JSONC m)
 target_compile_options(agentseat-eye PRIVATE -Wall -Wextra -Wpedantic -Werror=implicit-function-declaration)
 

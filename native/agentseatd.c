@@ -16,6 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "agentseat-i18n.h"
 #include "agentseat-input.h"
 
 #define AGENTSEATD_VERSION "0.5.0"
@@ -97,7 +98,11 @@ static void on_signal(int signal_number) {
 
 static void error_set(struct rpc_error* error, const char* code, const char* message) {
     snprintf(error->code, sizeof(error->code), "%s", code ? code : "AGENTSEAT_ERROR");
-    snprintf(error->message, sizeof(error->message), "%s", message ? message : "AgentSeat request failed");
+    snprintf(
+        error->message,
+        sizeof(error->message),
+        "%s",
+        message ? message : AS_TR("AgentSeat request failed"));
 }
 
 static bool write_all(int fd, const void* data, size_t length) {
@@ -147,18 +152,18 @@ static json_object* delivered_result(void) {
 }
 
 static void input_failure(struct rpc_error* error, const char* code, const char* message) {
-    error_set(error, code, message && message[0] ? message : "Native AgentSeat input failed");
+    error_set(error, code, message && message[0] ? message : AS_TR("Native AgentSeat input failed"));
 }
 
 static const char* string_param(json_object* params, const char* key, bool allow_empty, struct rpc_error* error) {
     json_object* value = NULL;
     if (!json_object_object_get_ex(params, key, &value) || !json_object_is_type(value, json_type_string)) {
-        error_set(error, "INVALID_PARAMS", "Required string parameter is missing");
+        error_set(error, "INVALID_PARAMS", AS_TR("Required string parameter is missing"));
         return NULL;
     }
     const char* text = json_object_get_string(value);
     if (!allow_empty && !text[0]) {
-        error_set(error, "INVALID_PARAMS", "String parameter must not be empty");
+        error_set(error, "INVALID_PARAMS", AS_TR("String parameter must not be empty"));
         return NULL;
     }
     return text;
@@ -171,7 +176,7 @@ static bool bool_param(json_object* params, const char* key, bool fallback, bool
         return true;
     }
     if (!json_object_is_type(value, json_type_boolean)) {
-        error_set(error, "INVALID_PARAMS", "Boolean parameter has the wrong type");
+        error_set(error, "INVALID_PARAMS", AS_TR("Boolean parameter has the wrong type"));
         return false;
     }
     *output = json_object_get_boolean(value);
@@ -183,7 +188,7 @@ static const char* optional_string_param(json_object* params, const char* key, s
     if (!json_object_object_get_ex(params, key, &value))
         return "";
     if (!json_object_is_type(value, json_type_string)) {
-        error_set(error, "INVALID_PARAMS", "Optional string parameter has the wrong type");
+        error_set(error, "INVALID_PARAMS", AS_TR("Optional string parameter has the wrong type"));
         return NULL;
     }
     return json_object_get_string(value);
@@ -270,7 +275,7 @@ static void leases_clear(struct daemon_state* state) {
 
 static bool require_created(struct daemon_state* state, struct rpc_error* error) {
     if (!state->created) {
-        error_set(error, "SEAT_NOT_CREATED", "Call seat.create before using AgentSeat");
+        error_set(error, "SEAT_NOT_CREATED", AS_TR("Call seat.create before using AgentSeat"));
         return false;
     }
     return true;
@@ -280,13 +285,17 @@ static bool require_active(struct daemon_state* state, struct rpc_error* error) 
     if (!require_created(state, error))
         return false;
     if (state->paused) {
-        error_set(error, "SEAT_PAUSED", "Agent seat is paused");
+        error_set(error, "SEAT_PAUSED", AS_TR("Agent seat is paused"));
         return false;
     }
     const int remaining = human_remaining_ms(state);
     if (remaining > 0) {
         char message[160] = {0};
-        snprintf(message, sizeof(message), "Human input has priority; retry after %d ms of quiet", remaining);
+        snprintf(
+            message,
+            sizeof(message),
+            AS_TR("Human input has priority; retry after %d ms of quiet"),
+            remaining);
         error_set(error, "HUMAN_ACTIVE", message);
         return false;
     }
@@ -297,7 +306,7 @@ static bool require_focus_lease(struct daemon_state* state, struct rpc_error* er
     if (!require_active(state, error))
         return false;
     if (!state->focused_window[0] || !lease_contains(state, state->focused_window)) {
-        error_set(error, "NO_FOCUS", "Focus a leased window before sending input");
+        error_set(error, "NO_FOCUS", AS_TR("Focus a leased window before sending input"));
         return false;
     }
     return true;
@@ -399,7 +408,10 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         if (!summary || !detail)
             return NULL;
         if (strlen(summary) > MAX_ACTIVITY_SUMMARY || strlen(detail) > MAX_CHAT_BYTES) {
-            error_set(error, "TEXT_TOO_LARGE", "Activity text exceeds the AgentSeat collaboration limit");
+            error_set(
+                error,
+                "TEXT_TOO_LARGE",
+                AS_TR("Activity text exceeds the AgentSeat collaboration limit"));
             return NULL;
         }
         snprintf(state->activity_summary, sizeof(state->activity_summary), "%s", summary);
@@ -411,7 +423,7 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         if (!text)
             return NULL;
         if (strlen(text) > MAX_CHAT_BYTES) {
-            error_set(error, "TEXT_TOO_LARGE", "Chat text exceeds the AgentSeat collaboration limit");
+            error_set(error, "TEXT_TOO_LARGE", AS_TR("Chat text exceeds the AgentSeat collaboration limit"));
             return NULL;
         }
         const char* role = strcmp(method, "chat.send") == 0 ? "human" : "agent";
@@ -422,7 +434,7 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         json_object* after_value = NULL;
         if (json_object_object_get_ex(params, "after_id", &after_value)) {
             if (!json_object_is_type(after_value, json_type_int) || json_object_get_int64(after_value) < 0) {
-                error_set(error, "INVALID_PARAMS", "after_id must be a non-negative integer");
+                error_set(error, "INVALID_PARAMS", AS_TR("after_id must be a non-negative integer"));
                 return NULL;
             }
             after_id = (uint64_t)json_object_get_int64(after_value);
@@ -514,15 +526,18 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         if (!window_id)
             return NULL;
         if (strcmp(method, "window.lease") != 0 && !lease_contains(state, window_id)) {
-            error_set(error, "LEASE_REQUIRED", "Window is not leased to AgentSeat");
+            error_set(error, "LEASE_REQUIRED", AS_TR("Window is not leased to AgentSeat"));
             return NULL;
         }
         if (strcmp(window_id, "agentseat:root") != 0) {
-            error_set(error, "WINDOW_NOT_FOUND", "The single-app micro-host has no such window");
+            error_set(error, "WINDOW_NOT_FOUND", AS_TR("The single-app micro-host has no such window"));
             return NULL;
         }
         if (strcmp(method, "capture.window") == 0) {
-            error_set(error, "CAPTURE_VIA_SCREENCOPY", "Capture the micro-host output through wlr-screencopy");
+            error_set(
+                error,
+                "CAPTURE_VIA_SCREENCOPY",
+                AS_TR("Capture the micro-host output through wlr-screencopy"));
             return NULL;
         }
         json_object* result = json_object_new_object();
@@ -530,7 +545,7 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         json_object_object_add(result, "backend", json_object_new_string("single-app-microhost"));
         if (strcmp(method, "window.lease") == 0 && !lease_add(state, window_id)) {
             json_object_put(result);
-            error_set(error, "LEASE_LIMIT", "Too many windows are mapped in the wrapped application");
+            error_set(error, "LEASE_LIMIT", AS_TR("Too many windows are mapped in the wrapped application"));
             return NULL;
         }
         if (strcmp(method, "window.release") == 0)
@@ -545,13 +560,13 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         json_object* x_value = NULL;
         json_object* y_value = NULL;
         if (!json_object_object_get_ex(params, "x", &x_value) || !json_object_object_get_ex(params, "y", &y_value)) {
-            error_set(error, "INVALID_PARAMS", "pointer.move_absolute requires x and y");
+            error_set(error, "INVALID_PARAMS", AS_TR("pointer.move_absolute requires x and y"));
             return NULL;
         }
         const double x = json_object_get_double(x_value);
         const double y = json_object_get_double(y_value);
         if (x < 0 || x > 1 || y < 0 || y > 1) {
-            error_set(error, "INVALID_PARAMS", "x and y must be normalized from 0 to 1");
+            error_set(error, "INVALID_PARAMS", AS_TR("x and y must be normalized from 0 to 1"));
             return NULL;
         }
         char message[512] = {0};
@@ -570,12 +585,12 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         bool pressed = false;
         if (!json_object_object_get_ex(params, "button", &button_value) || !bool_param(params, "pressed", false, &pressed, error)) {
             if (!error->code[0])
-                error_set(error, "INVALID_PARAMS", "pointer.button requires button and pressed");
+                error_set(error, "INVALID_PARAMS", AS_TR("pointer.button requires button and pressed"));
             return NULL;
         }
         const int button = json_object_get_int(button_value);
         if (button < 1 || button > 1023) {
-            error_set(error, "INVALID_PARAMS", "button must be an integer from 1 to 1023");
+            error_set(error, "INVALID_PARAMS", AS_TR("button must be an integer from 1 to 1023"));
             return NULL;
         }
         char message[512] = {0};
@@ -592,16 +607,16 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         json_object* value = NULL;
         if (!axis || !json_object_object_get_ex(params, "value120", &value)) {
             if (!error->code[0])
-                error_set(error, "INVALID_PARAMS", "pointer.scroll requires axis and value120");
+                error_set(error, "INVALID_PARAMS", AS_TR("pointer.scroll requires axis and value120"));
             return NULL;
         }
         if (strcmp(axis, "vertical") != 0 && strcmp(axis, "horizontal") != 0) {
-            error_set(error, "INVALID_PARAMS", "axis must be vertical or horizontal");
+            error_set(error, "INVALID_PARAMS", AS_TR("axis must be vertical or horizontal"));
             return NULL;
         }
         const int value120 = json_object_get_int(value);
         if (value120 < -12000 || value120 > 12000) {
-            error_set(error, "INVALID_PARAMS", "value120 must be from -12000 to 12000");
+            error_set(error, "INVALID_PARAMS", AS_TR("value120 must be from -12000 to 12000"));
             return NULL;
         }
         char message[512] = {0};
@@ -623,13 +638,13 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         if (!text)
             return NULL;
         if (strlen(text) > MAX_TYPE_BYTES) {
-            error_set(error, "TEXT_TOO_LARGE", "text exceeds the native AgentSeat input limit");
+            error_set(error, "TEXT_TOO_LARGE", AS_TR("text exceeds the native AgentSeat input limit"));
             return NULL;
         }
         json_object* interval_value = NULL;
         const int interval = json_object_object_get_ex(params, "interval_ms", &interval_value) ? json_object_get_int(interval_value) : 4;
         if (interval < 0 || interval > 10000) {
-            error_set(error, "INVALID_PARAMS", "interval_ms must be from 0 to 10000");
+            error_set(error, "INVALID_PARAMS", AS_TR("interval_ms must be from 0 to 10000"));
             return NULL;
         }
         size_t typed = 0;
@@ -658,12 +673,12 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         if (!json_object_object_get_ex(params, "keycode", &key_value) ||
             !bool_param(params, "pressed", false, &pressed, error)) {
             if (!error->code[0])
-                error_set(error, "INVALID_PARAMS", "keyboard.key requires keycode and pressed");
+                error_set(error, "INVALID_PARAMS", AS_TR("keyboard.key requires keycode and pressed"));
             return NULL;
         }
         const int keycode = json_object_get_int(key_value);
         if (keycode < 0 || keycode >= 768) {
-            error_set(error, "INVALID_PARAMS", "keycode must be an evdev code from 0 to 767");
+            error_set(error, "INVALID_PARAMS", AS_TR("keycode must be an evdev code from 0 to 767"));
             return NULL;
         }
         char message[512] = {0};
@@ -680,7 +695,7 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         json_object_object_add(result, "shutdown", json_object_new_boolean(true));
         return result;
     }
-    error_set(error, "METHOD_NOT_FOUND", "Unknown native AgentSeat method");
+    error_set(error, "METHOD_NOT_FOUND", AS_TR("Unknown native AgentSeat method"));
     return NULL;
 }
 
@@ -699,12 +714,12 @@ static json_object* response_for(struct daemon_state* state, json_object* reques
     bool owns_params = false;
     if (!json_object_is_type(request, json_type_object) || !json_object_object_get_ex(request, "method", &method_value) ||
         !json_object_is_type(method_value, json_type_string)) {
-        error_set(&error, "INVALID_REQUEST", "method must be a non-empty string");
+        error_set(&error, "INVALID_REQUEST", AS_TR("method must be a non-empty string"));
     } else if (!json_object_object_get_ex(request, "params", &params)) {
         params = json_object_new_object();
         owns_params = true;
     } else if (!json_object_is_type(params, json_type_object)) {
-        error_set(&error, "INVALID_PARAMS", "params must be an object");
+        error_set(&error, "INVALID_PARAMS", AS_TR("params must be an object"));
     }
 
     json_object* result = NULL;
@@ -718,7 +733,11 @@ static json_object* response_for(struct daemon_state* state, json_object* reques
     else {
         json_object* failure = json_object_new_object();
         json_object_object_add(failure, "code", json_object_new_string(error.code[0] ? error.code : "INTERNAL_ERROR"));
-        json_object_object_add(failure, "message", json_object_new_string(error.message[0] ? error.message : "Native AgentSeat request failed"));
+        json_object_object_add(
+            failure,
+            "message",
+            json_object_new_string(
+                error.message[0] ? error.message : AS_TR("Native AgentSeat request failed")));
         json_object_object_add(response, "error", failure);
     }
     return response;
@@ -745,45 +764,45 @@ static bool ensure_parent(const char* path) {
 
 static bool server_start(struct daemon_state* state, struct rpc_error* error) {
     if (!ensure_parent(state->socket_path)) {
-        error_set(error, "SOCKET_FAILED", "Cannot create AgentSeat runtime directory");
+        error_set(error, "SOCKET_FAILED", AS_TR("Cannot create AgentSeat runtime directory"));
         return false;
     }
     unlink(state->socket_path);
     state->listen_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (state->listen_fd < 0) {
-        error_set(error, "SOCKET_FAILED", "Cannot create AgentSeat Unix socket");
+        error_set(error, "SOCKET_FAILED", AS_TR("Cannot create AgentSeat Unix socket"));
         return false;
     }
     struct sockaddr_un address = {.sun_family = AF_UNIX};
     if (strlen(state->socket_path) >= sizeof(address.sun_path)) {
-        error_set(error, "SOCKET_FAILED", "AgentSeat socket path is too long");
+        error_set(error, "SOCKET_FAILED", AS_TR("AgentSeat socket path is too long"));
         return false;
     }
     strcpy(address.sun_path, state->socket_path);
     if (bind(state->listen_fd, (struct sockaddr*)&address, sizeof(address)) != 0 || listen(state->listen_fd, 16) != 0) {
-        error_set(error, "SOCKET_FAILED", "Cannot bind AgentSeat Unix socket");
+        error_set(error, "SOCKET_FAILED", AS_TR("Cannot bind AgentSeat Unix socket"));
         return false;
     }
     chmod(state->socket_path, 0600);
 
     if (!ensure_parent(state->activity_socket_path)) {
-        error_set(error, "SOCKET_FAILED", "Cannot create AgentSeat activity runtime directory");
+        error_set(error, "SOCKET_FAILED", AS_TR("Cannot create AgentSeat activity runtime directory"));
         return false;
     }
     unlink(state->activity_socket_path);
     state->activity_fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (state->activity_fd < 0) {
-        error_set(error, "SOCKET_FAILED", "Cannot create AgentSeat human activity socket");
+        error_set(error, "SOCKET_FAILED", AS_TR("Cannot create AgentSeat human activity socket"));
         return false;
     }
     struct sockaddr_un activity_address = {.sun_family = AF_UNIX};
     if (strlen(state->activity_socket_path) >= sizeof(activity_address.sun_path)) {
-        error_set(error, "SOCKET_FAILED", "AgentSeat activity socket path is too long");
+        error_set(error, "SOCKET_FAILED", AS_TR("AgentSeat activity socket path is too long"));
         return false;
     }
     strcpy(activity_address.sun_path, state->activity_socket_path);
     if (bind(state->activity_fd, (struct sockaddr*)&activity_address, sizeof(activity_address)) != 0) {
-        error_set(error, "SOCKET_FAILED", "Cannot bind AgentSeat human activity socket");
+        error_set(error, "SOCKET_FAILED", AS_TR("Cannot bind AgentSeat human activity socket"));
         return false;
     }
     chmod(state->activity_socket_path, 0600);
@@ -828,7 +847,7 @@ static int run_server(struct daemon_state* state) {
         if (poll_fds[1].revents & POLLIN) {
             char message[512] = {0};
             if (!agentseat_input_dispatch(state->input, message, sizeof(message))) {
-                fprintf(stderr, "agentseatd: input dispatch failed: %s\n", message);
+                fprintf(stderr, "agentseatd: %s: %s\n", AS_TR("input dispatch failed"), message);
                 return 2;
             }
         }
@@ -850,10 +869,14 @@ static int run_server(struct daemon_state* state) {
 }
 
 static void usage(const char* program) {
-    fprintf(stderr, "usage: %s --socket PATH --activity-socket PATH [--human-grace-ms N] [--workspace N] [--seat-id ID] [--seat-name NAME] [--app-id ID] [--window-title TITLE] [--xwayland] [--width N] [--height N]\n", program);
+    fprintf(
+        stderr,
+        AS_TR("usage: %s --socket PATH --activity-socket PATH [--human-grace-ms N] [--workspace N] [--seat-id ID] [--seat-name NAME] [--app-id ID] [--window-title TITLE] [--xwayland] [--width N] [--height N]\n"),
+        program);
 }
 
 int main(int argc, char** argv) {
+    agentseat_i18n_init();
     struct daemon_state state = {
         .workspace = 1,
         .listen_fd = -1,
@@ -868,7 +891,7 @@ int main(int argc, char** argv) {
         .window_title = "AgentSeat Application",
         .output_width = 1280,
         .output_height = 720,
-        .activity_summary = "Waiting for the Agent",
+        .activity_summary = "",
     };
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc)

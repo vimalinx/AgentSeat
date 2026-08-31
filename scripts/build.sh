@@ -7,6 +7,8 @@ build_root=${AGENTSEAT_BUILD_DIR:-$project_root/build}
 native_build="$build_root/native"
 microhost_build="$build_root/microhost"
 
+AGENTSEAT_LOCALE_BUILD_DIR="$build_root/locale" "$script_dir/build-translations.sh"
+
 cmake -S "$project_root/native" -B "$native_build" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$native_build" --parallel
 

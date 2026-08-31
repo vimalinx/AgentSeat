@@ -9,13 +9,19 @@ command_link="$install_prefix/bin/agentseat"
 
 "$project_root/scripts/build.sh"
 
-install -d "$install_root/bin" "$install_root/share/examples" "$install_prefix/bin"
+install -d "$install_root/bin" "$install_root/share/examples" "$install_root/share/locale" "$install_prefix/bin"
 for name in agentseat launch-app run-microhost x11-clipboard-owner agentseatd agentseat-eye agentseat-microhost; do
     install -m 0755 "$project_root/bin/$name" "$install_root/bin/$name"
 done
 install -m 0644 "$project_root/LICENSE" "$install_root/share/LICENSE"
 install -m 0644 "$project_root/THIRD_PARTY_NOTICES.md" "$install_root/share/THIRD_PARTY_NOTICES.md"
 install -m 0644 "$project_root/config/config.toml.example" "$install_root/share/examples/config.toml"
+for language in zh_CN zh_TW; do
+    install -d "$install_root/share/locale/$language/LC_MESSAGES"
+    install -m 0644 \
+        "$project_root/build/locale/$language/LC_MESSAGES/agentseat.mo" \
+        "$install_root/share/locale/$language/LC_MESSAGES/agentseat.mo"
+done
 
 if [ -e "$command_link" ] && [ ! -L "$command_link" ]; then
     printf '%s\n' "Refusing to replace non-symlink: $command_link" >&2

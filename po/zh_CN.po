@@ -1,0 +1,897 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: AgentSeat 0.5.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-31 18:50+0800\n"
+"PO-Revision-Date: 2026-08-31 00:00+0800\n"
+"Last-Translator: AgentSeat contributors\n"
+"Language-Team: Simplified Chinese\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#: bin/agentseat:175
+msgid "language must be auto, en, zh-CN, or zh-TW"
+msgstr "语言必须是 auto、en、zh-CN 或 zh-TW"
+
+#: bin/agentseat:185
+#, python-format
+msgid "%(heading)s:"
+msgstr "%(heading)s："
+
+#: bin/agentseat:186
+msgid "usage: "
+msgstr "用法："
+
+#: bin/agentseat:187
+#, python-format
+msgid " (default: %(default)s)"
+msgstr "（默认值：%(default)s）"
+
+#: bin/agentseat:188
+#, python-format
+msgid "argument %(argument_name)s: %(message)s"
+msgstr "参数 %(argument_name)s：%(message)s"
+
+#: bin/agentseat:189
+msgid "show program's version number and exit"
+msgstr "显示程序版本号并退出"
+
+#: bin/agentseat:190
+#, python-format
+msgid "unknown parser %(parser_name)r (choices: %(choices)s)"
+msgstr "未知解析器 %(parser_name)r（可选：%(choices)s）"
+
+#: bin/agentseat:191
+#, python-format
+msgid "command '%(parser_name)s' is deprecated"
+msgstr "命令“%(parser_name)s”已弃用"
+
+#: bin/agentseat:192
+#, python-format
+msgid "argument \"-\" with mode %r"
+msgstr "参数“-”使用模式 %r"
+
+#: bin/agentseat:193
+#, python-format
+msgid "can't open '%(filename)s': %(error)s"
+msgstr "无法打开“%(filename)s”：%(error)s"
+
+#: bin/agentseat:194
+msgid "positional arguments"
+msgstr "位置参数"
+
+#: bin/agentseat:195
+msgid "options"
+msgstr "选项"
+
+#: bin/agentseat:196
+msgid "show this help message and exit"
+msgstr "显示此帮助信息并退出"
+
+#: bin/agentseat:197
+msgid "subcommands"
+msgstr "子命令"
+
+#: bin/agentseat:198
+#, python-format
+msgid "unrecognized arguments: %s"
+msgstr "无法识别的参数：%s"
+
+#: bin/agentseat:199
+#, python-format
+msgid "not allowed with argument %s"
+msgstr "不能与参数 %s 同时使用"
+
+#: bin/agentseat:200
+#, python-format
+msgid "ambiguous option: %(option)s could match %(matches)s"
+msgstr "选项不明确：%(option)s 可能匹配 %(matches)s"
+
+#: bin/agentseat:201
+#, python-format
+msgid "ignored explicit argument %r"
+msgstr "已忽略显式参数 %r"
+
+#: bin/agentseat:202
+#, python-format
+msgid "option '%(option)s' is deprecated"
+msgstr "选项“%(option)s”已弃用"
+
+#: bin/agentseat:203
+#, python-format
+msgid "argument '%(argument_name)s' is deprecated"
+msgstr "参数“%(argument_name)s”已弃用"
+
+#: bin/agentseat:204
+#, python-format
+msgid "the following arguments are required: %s"
+msgstr "必须提供以下参数：%s"
+
+#: bin/agentseat:205
+#, python-format
+msgid "one of the arguments %s is required"
+msgstr "必须提供参数 %s 中的一个"
+
+#: bin/agentseat:206
+msgid "expected one argument"
+msgstr "需要一个参数"
+
+#: bin/agentseat:207
+msgid "expected at most one argument"
+msgstr "最多只能提供一个参数"
+
+#: bin/agentseat:208
+msgid "expected at least one argument"
+msgstr "至少需要一个参数"
+
+#: bin/agentseat:209
+#, python-format
+msgid "unexpected option string: %s"
+msgstr "意外的选项字符串：%s"
+
+#: bin/agentseat:210
+#, python-format
+msgid "invalid %(type)s value: %(value)r"
+msgstr "无效的 %(type)s 值：%(value)r"
+
+#: bin/agentseat:211
+#, python-format
+msgid "invalid choice: %(value)r (choose from %(choices)s)"
+msgstr "无效选择：%(value)r（可选：%(choices)s）"
+
+#: bin/agentseat:212
+#, python-format
+msgid "%(prog)s: error: %(message)s\n"
+msgstr "%(prog)s：错误：%(message)s\n"
+
+#: bin/agentseat:213
+#, python-format
+msgid "%(prog)s: warning: %(message)s\n"
+msgstr "%(prog)s：警告：%(message)s\n"
+
+#: bin/agentseat:232
+#, python-brace-format
+msgid "command failed: {command}"
+msgstr "命令执行失败：{command}"
+
+#: bin/agentseat:252
+msgid "memory-only; cleared when the daemon exits"
+msgstr "仅存于内存；守护进程退出时清除"
+
+#: bin/agentseat:253
+msgid "volatile; removed by the user session runtime manager"
+msgstr "临时数据；由用户会话运行时管理器清除"
+
+#: bin/agentseat:254
+msgid "written only when observe is requested"
+msgstr "仅在请求 observe 时写入"
+
+#: bin/agentseat:267
+#, python-brace-format
+msgid "cannot read AgentSeat configuration {path}: {error}"
+msgstr "无法读取 AgentSeat 配置 {path}：{error}"
+
+#: bin/agentseat:271
+msgid "AgentSeat configuration [general] must be a table"
+msgstr "AgentSeat 配置中的 [general] 必须是表"
+
+#: bin/agentseat:280
+msgid "general.default_workspace must be a positive integer"
+msgstr "general.default_workspace 必须是正整数"
+
+#: bin/agentseat:282
+msgid "general.human_priority_grace_ms must be an integer from 0 to 60000"
+msgstr "general.human_priority_grace_ms 必须是 0 到 60000 之间的整数"
+
+#: bin/agentseat:284
+msgid "general.eye_hud must be true or false"
+msgstr "general.eye_hud 必须是 true 或 false"
+
+#: bin/agentseat:286 bin/agentseat:290
+msgid "general.language must be auto, en, zh-CN, or zh-TW"
+msgstr "general.language 必须是 auto、en、zh-CN 或 zh-TW"
+
+#: bin/agentseat:354
+msgid "host Hyprland instance not found"
+msgstr "找不到宿主 Hyprland 实例"
+
+#: bin/agentseat:411
+msgid "host workspace must be a positive integer"
+msgstr "宿主工作区必须是正整数"
+
+#: bin/agentseat:499
+msgid "AgentSeat daemon response exceeds 1 MiB"
+msgstr "AgentSeat 守护进程响应超过 1 MiB"
+
+#: bin/agentseat:501
+#, python-brace-format
+msgid "cannot reach AgentSeat daemon: {error}"
+msgstr "无法连接 AgentSeat 守护进程：{error}"
+
+#: bin/agentseat:503
+msgid "AgentSeat daemon returned no response"
+msgstr "AgentSeat 守护进程没有返回响应"
+
+#: bin/agentseat:507
+#, python-brace-format
+msgid "invalid AgentSeat daemon response: {error}"
+msgstr "AgentSeat 守护进程响应无效：{error}"
+
+#: bin/agentseat:509
+msgid "AgentSeat daemon response ID mismatch"
+msgstr "AgentSeat 守护进程响应 ID 不匹配"
+
+#: bin/agentseat:513
+msgid "AgentSeat daemon rejected the request"
+msgstr "AgentSeat 守护进程拒绝了请求"
+
+#: bin/agentseat:543
+msgid "run requires a non-empty command after --"
+msgstr "run 要求在 -- 后提供非空命令"
+
+#: bin/agentseat:552
+#, python-brace-format
+msgid "working directory does not exist: {path}"
+msgstr "工作目录不存在：{path}"
+
+#: bin/agentseat:558
+#, python-brace-format
+msgid "unsupported display mode: {mode}"
+msgstr "不支持的显示模式：{mode}"
+
+#: bin/agentseat:589
+#, python-brace-format
+msgid "unknown legacy preset: {preset}"
+msgstr "未知的旧版预设：{preset}"
+
+#: bin/agentseat:624
+msgid ""
+"AgentSeat is already running another application; stop it before launching a "
+"different command"
+msgstr "AgentSeat 正在运行另一个应用；请先停止它再启动不同命令"
+
+#: bin/agentseat:627
+msgid ""
+"an unmanaged AgentSeat micro-host is already running; run agentseat stop "
+"first"
+msgstr "已有未受管理的 AgentSeat 微宿主在运行；请先执行 agentseat stop"
+
+#: bin/agentseat:650
+msgid "AgentSeat micro-host did not appear"
+msgstr "AgentSeat 微宿主未出现"
+
+#: bin/agentseat:654
+msgid "outer AgentSeat window did not appear"
+msgstr "AgentSeat 外层窗口未出现"
+
+#: bin/agentseat:658
+#, python-brace-format
+msgid "AgentSeat outer window did not map on requested workspace {workspace}"
+msgstr "AgentSeat 外层窗口未映射到指定工作区 {workspace}"
+
+#: bin/agentseat:664
+#, python-brace-format
+msgid "native AgentSeat daemon is missing or not executable: {path}"
+msgstr "原生 AgentSeat 守护进程缺失或不可执行：{path}"
+
+#: bin/agentseat:668
+#, python-brace-format
+msgid "native wlr-screencopy client is missing or not executable: {path}"
+msgstr "原生 wlr-screencopy 客户端缺失或不可执行：{path}"
+
+#: bin/agentseat:671
+msgid "AgentSeat application environment receipt did not appear"
+msgstr "AgentSeat 应用环境回执未出现"
+
+#: bin/agentseat:673
+msgid "application did not map in the AgentSeat micro-host"
+msgstr "应用未映射到 AgentSeat 微宿主"
+
+#: bin/agentseat:706
+msgid "AgentSeat daemon socket did not appear"
+msgstr "AgentSeat 守护进程套接字未出现"
+
+#: bin/agentseat:708
+msgid "application window did not appear"
+msgstr "应用窗口未出现"
+
+#: bin/agentseat:725
+msgid "host focus isolation failed: before={before!r} after={after!r}"
+msgstr "宿主焦点隔离失败：之前={before!r} 之后={after!r}"
+
+#: bin/agentseat:809
+#, python-brace-format
+msgid "native AgentSeat eye HUD is missing or not executable: {path}"
+msgstr "原生 AgentSeat 小脑袋 HUD 缺失或不可执行：{path}"
+
+#: bin/agentseat:813
+msgid "AgentSeat must be running before its embedded AI head can start"
+msgstr "必须先运行 AgentSeat，才能启动嵌入式 AI 小脑袋"
+
+#: bin/agentseat:819
+msgid "AgentSeat private Wayland display is unavailable"
+msgstr "AgentSeat 私有 Wayland 显示不可用"
+
+#: bin/agentseat:849
+#, python-brace-format
+msgid "AgentSeat eye HUD exited during startup; inspect {path}"
+msgstr "AgentSeat 小脑袋 HUD 启动时退出；请检查 {path}"
+
+#: bin/agentseat:868
+msgid "AgentSeat eye HUD did not stop"
+msgstr "AgentSeat 小脑袋 HUD 未停止"
+
+#: bin/agentseat:891
+msgid "daemon did not stop"
+msgstr "守护进程未停止"
+
+#: bin/agentseat:898
+#, python-brace-format
+msgid "refusing to remove an unexpected AgentSeat socket: {path}"
+msgstr "拒绝删除异常的 AgentSeat 套接字：{path}"
+
+#: bin/agentseat:907
+msgid "AgentSeat micro-host did not stop"
+msgstr "AgentSeat 微宿主未停止"
+
+#: bin/agentseat:947
+msgid "private X display is unavailable"
+msgstr "私有 X 显示不可用"
+
+#: bin/agentseat:955
+msgid "no OnlyOffice window is available"
+msgstr "没有可用的 OnlyOffice 窗口"
+
+#: bin/agentseat:968
+msgid "private X clipboard owner failed"
+msgstr "私有 X 剪贴板所有者失败"
+
+#: bin/agentseat:987
+msgid "OnlyOffice Paste menu item was not visually detected"
+msgstr "未能从画面中识别 OnlyOffice 的“粘贴”菜单项"
+
+#: bin/agentseat:1014
+msgid "private Wayland display is unavailable"
+msgstr "私有 Wayland 显示不可用"
+
+#: bin/agentseat:1018
+#, python-brace-format
+msgid "private Unicode clipboard helper is unavailable: {path}"
+msgstr "私有 Unicode 剪贴板辅助程序不可用：{path}"
+
+#: bin/agentseat:1035
+msgid "private clipboard input pipe is unavailable"
+msgstr "私有剪贴板输入管道不可用"
+
+#: bin/agentseat:1045
+msgid "private AgentSeat clipboard did not become ready"
+msgstr "AgentSeat 私有剪贴板未就绪"
+
+#: bin/agentseat:1055
+msgid "application did not request the private AgentSeat clipboard"
+msgstr "应用未请求 AgentSeat 私有剪贴板"
+
+#: bin/agentseat:1058
+msgid "private AgentSeat clipboard transfer failed"
+msgstr "AgentSeat 私有剪贴板传输失败"
+
+#: bin/agentseat:1078
+msgid "capture output must be an absolute .png path"
+msgstr "截图输出必须是绝对 .png 路径"
+
+#: bin/agentseat:1082
+#, python-brace-format
+msgid "capture output parent is unavailable: {error}"
+msgstr "截图输出的父目录不可用：{error}"
+
+#: bin/agentseat:1084
+msgid "capture output parent must be a directory owned by the current user"
+msgstr "截图输出的父目录必须由当前用户拥有"
+
+#: bin/agentseat:1087
+msgid "capture output cannot be a symbolic link"
+msgstr "截图输出不能是符号链接"
+
+#: bin/agentseat:1089
+msgid ""
+"existing capture output must be a regular file owned by the current user"
+msgstr "已有截图输出必须是当前用户拥有的普通文件"
+
+#: bin/agentseat:1100
+msgid "no leased application window is available"
+msgstr "没有可用的已授权应用窗口"
+
+#: bin/agentseat:1113
+msgid "AgentSeat micro-host exited before capture"
+msgstr "AgentSeat 微宿主在截图前已退出"
+
+#: bin/agentseat:1129
+#, python-brace-format
+msgid "micro-host screencopy did not complete: {error}"
+msgstr "微宿主屏幕复制未完成：{error}"
+
+#: bin/agentseat:1131
+msgid "native wlr-screencopy failed"
+msgstr "原生 wlr-screencopy 失败"
+
+#: bin/agentseat:1187
+msgid "Operate one local application with a private AI pointer and keyboard."
+msgstr "使用 AI 的私有指针和键盘操作一个本地应用。"
+
+#: bin/agentseat:1193
+msgid "interface language: auto, en, zh-CN, or zh-TW"
+msgstr "界面语言：auto、en、zh-CN 或 zh-TW"
+
+#: bin/agentseat:1196
+msgid "start a legacy verified demo"
+msgstr "启动已验证的旧版演示"
+
+#: bin/agentseat:1202 bin/agentseat:1215
+msgid "place the outer window on this host workspace"
+msgstr "将外层窗口放到这个宿主工作区"
+
+#: bin/agentseat:1204
+msgid "wrap an arbitrary application command"
+msgstr "封装任意应用命令"
+
+#: bin/agentseat:1208
+msgid "force the generic private-XWayland compatibility lane"
+msgstr "强制使用通用私有 XWayland 兼容通道"
+
+#: bin/agentseat:1210
+msgid "working directory for the wrapped application"
+msgstr "被封装应用的工作目录"
+
+#: bin/agentseat:1217
+msgid "application command after --"
+msgstr "-- 后的应用命令"
+
+#: bin/agentseat:1218
+msgid "show the controller and protocol version"
+msgstr "显示控制器和协议版本"
+
+#: bin/agentseat:1219
+msgid "show AgentSeat's XDG storage locations"
+msgstr "显示 AgentSeat 的 XDG 存储位置"
+
+#: bin/agentseat:1220
+msgid "show the effective AgentSeat configuration"
+msgstr "显示当前生效的 AgentSeat 配置"
+
+#: bin/agentseat:1221
+msgid "show the current AgentSeat session"
+msgstr "显示当前 AgentSeat 会话"
+
+#: bin/agentseat:1222
+msgid "control the embedded private-microhost AI head"
+msgstr "控制嵌入私有微宿主的 AI 小脑袋"
+
+#: bin/agentseat:1224
+msgid "show human-priority and AI activity state"
+msgstr "显示人类优先级和 AI 活动状态"
+
+#: bin/agentseat:1225
+msgid "publish the Agent's current AgentSeat action"
+msgstr "发布 Agent 当前的 AgentSeat 操作"
+
+#: bin/agentseat:1228
+msgid "read messages sent from the eye HUD"
+msgstr "读取从小脑袋 HUD 发来的消息"
+
+#: bin/agentseat:1230
+msgid "reply to the human in the eye HUD"
+msgstr "回复小脑袋 HUD 中的人类"
+
+#: bin/agentseat:1232
+msgid "list windows in the wrapped application tree"
+msgstr "列出被封装应用树中的窗口"
+
+#: bin/agentseat:1233
+msgid "pause Agent input"
+msgstr "暂停 Agent 输入"
+
+#: bin/agentseat:1234
+msgid "resume Agent input"
+msgstr "恢复 Agent 输入"
+
+#: bin/agentseat:1235
+msgid "move the private pointer using normalized coordinates"
+msgstr "使用归一化坐标移动私有指针"
+
+#: bin/agentseat:1238
+msgid "click with the private pointer"
+msgstr "使用私有指针点击"
+
+#: bin/agentseat:1240
+msgid "scroll inside the wrapped application"
+msgstr "在被封装应用内滚动"
+
+#: bin/agentseat:1243
+msgid "send one scoped evdev key event"
+msgstr "发送一个限定范围的 evdev 按键事件"
+
+#: bin/agentseat:1246
+msgid "type text with the private keyboard"
+msgstr "使用私有键盘输入文本"
+
+#: bin/agentseat:1248
+msgid "capture the private application output"
+msgstr "截取私有应用输出"
+
+#: bin/agentseat:1250
+msgid "stop the current AgentSeat session"
+msgstr "停止当前 AgentSeat 会话"
+
+#: bin/agentseat:1335
+msgid "unknown command"
+msgstr "未知命令"
+
+#: native/agentseat-eye.c:391
+msgid "Collapse AgentSeat AI"
+msgstr "收起 AgentSeat AI"
+
+#: native/agentseat-eye.c:391 native/agentseat-eye.c:819
+msgid "Expand the AgentSeat AI head"
+msgstr "展开 AgentSeat AI 小脑袋"
+
+#: native/agentseat-eye.c:503
+msgid ""
+"Got it. In a live session, the Agent operating this app reads and replies "
+"here."
+msgstr "收到。正式模式下，正在操作应用的 Agent 会从这里读取并回复。"
+
+#: native/agentseat-eye.c:510
+msgid "Connection temporarily unavailable"
+msgstr "连接暂时不可用"
+
+#: native/agentseat-eye.c:537 native/agentseat-eye.c:556
+#: native/agentseat-eye.c:634
+msgid "Waiting for Agent"
+msgstr "等待 Agent"
+
+#: native/agentseat-eye.c:551
+msgid "You're in control · AI stepped aside"
+msgstr "你正在操作 · AI 已让路"
+
+#: native/agentseat-eye.c:552 native/agentseat-eye.c:628
+msgid "AI can operate"
+msgstr "AI 可操作"
+
+#: native/agentseat-eye.c:552
+msgid "AI is paused"
+msgstr "AI 已暂停"
+
+#: native/agentseat-eye.c:560
+msgid "Waiting for AgentSeat"
+msgstr "正在等待 AgentSeat"
+
+#: native/agentseat-eye.c:628
+msgid "Connecting"
+msgstr "正在连接"
+
+#: native/agentseat-eye.c:634
+msgid "Reviewing the table layout"
+msgstr "正在检查文档里的表格布局"
+
+#: native/agentseat-eye.c:645
+msgid ""
+"AgentSeat clicks only inside this app. When you take over, AI pauses "
+"automatically."
+msgstr "只在 AgentSeat 应用内点击；你一动手，AI 会自动暂停。"
+
+#: native/agentseat-eye.c:670
+msgid "I'm checking the table margins on page 3. The body is unchanged."
+msgstr "我正在核对第 3 页的表格边距，还没有改动正文。"
+
+#: native/agentseat-eye.c:672
+msgid ""
+"Align the header first. Wait for my confirmation before changing the body."
+msgstr "先把表头对齐，正文等我确认。"
+
+#: native/agentseat-eye.c:692
+msgid "Tell AI what to do next…"
+msgstr "告诉 AI 接下来做什么…"
+
+#: native/agentseat-eye.c:696
+msgid "Message AgentSeat AI"
+msgstr "给 AgentSeat AI 发消息"
+
+#: native/agentseat-eye.c:699
+msgid "Send message"
+msgstr "发送消息"
+
+#: native/agentseat-eye.c:777
+msgid "host compositor does not support layer shell"
+msgstr "宿主合成器不支持 layer shell"
+
+#: native/agentseat-eye.c:855
+#, c-format
+msgid "usage: %s [--socket PATH] [--demo] [--embedded] [--render-head PNG]\n"
+msgstr "用法：%s [--socket 路径] [--demo] [--embedded] [--render-head PNG]\n"
+
+#: native/agentseat-eye.c:876
+#, c-format
+msgid "agentseat-eye: cannot render head: %s\n"
+msgstr "agentseat-eye：无法渲染小脑袋：%s\n"
+
+#: native/agentseatd.c:105
+msgid "AgentSeat request failed"
+msgstr "AgentSeat 请求失败"
+
+#: native/agentseatd.c:155
+msgid "Native AgentSeat input failed"
+msgstr "原生 AgentSeat 输入失败"
+
+#: native/agentseatd.c:161
+msgid "Required string parameter is missing"
+msgstr "缺少必需的字符串参数"
+
+#: native/agentseatd.c:166
+msgid "String parameter must not be empty"
+msgstr "字符串参数不能为空"
+
+#: native/agentseatd.c:179
+msgid "Boolean parameter has the wrong type"
+msgstr "布尔参数类型错误"
+
+#: native/agentseatd.c:191
+msgid "Optional string parameter has the wrong type"
+msgstr "可选字符串参数类型错误"
+
+#: native/agentseatd.c:278
+msgid "Call seat.create before using AgentSeat"
+msgstr "使用 AgentSeat 前请先调用 seat.create"
+
+#: native/agentseatd.c:288
+msgid "Agent seat is paused"
+msgstr "Agent 席位已暂停"
+
+#: native/agentseatd.c:297
+#, c-format
+msgid "Human input has priority; retry after %d ms of quiet"
+msgstr "人类输入优先；静置 %d 毫秒后重试"
+
+#: native/agentseatd.c:309
+msgid "Focus a leased window before sending input"
+msgstr "发送输入前请聚焦已授权窗口"
+
+#: native/agentseatd.c:414
+msgid "Activity text exceeds the AgentSeat collaboration limit"
+msgstr "活动文本超过 AgentSeat 协作限制"
+
+#: native/agentseatd.c:426
+msgid "Chat text exceeds the AgentSeat collaboration limit"
+msgstr "聊天文本超过 AgentSeat 协作限制"
+
+#: native/agentseatd.c:437
+msgid "after_id must be a non-negative integer"
+msgstr "after_id 必须是非负整数"
+
+#: native/agentseatd.c:529
+msgid "Window is not leased to AgentSeat"
+msgstr "窗口未授权给 AgentSeat"
+
+#: native/agentseatd.c:533
+msgid "The single-app micro-host has no such window"
+msgstr "单应用微宿主中没有该窗口"
+
+#: native/agentseatd.c:540
+msgid "Capture the micro-host output through wlr-screencopy"
+msgstr "请通过 wlr-screencopy 截取微宿主输出"
+
+#: native/agentseatd.c:548
+msgid "Too many windows are mapped in the wrapped application"
+msgstr "被封装应用映射的窗口过多"
+
+#: native/agentseatd.c:563
+msgid "pointer.move_absolute requires x and y"
+msgstr "pointer.move_absolute 需要 x 和 y"
+
+#: native/agentseatd.c:569
+msgid "x and y must be normalized from 0 to 1"
+msgstr "x 和 y 必须归一化到 0 到 1"
+
+#: native/agentseatd.c:588
+msgid "pointer.button requires button and pressed"
+msgstr "pointer.button 需要 button 和 pressed"
+
+#: native/agentseatd.c:593
+msgid "button must be an integer from 1 to 1023"
+msgstr "button 必须是 1 到 1023 之间的整数"
+
+#: native/agentseatd.c:610
+msgid "pointer.scroll requires axis and value120"
+msgstr "pointer.scroll 需要 axis 和 value120"
+
+#: native/agentseatd.c:614
+msgid "axis must be vertical or horizontal"
+msgstr "axis 必须是 vertical 或 horizontal"
+
+#: native/agentseatd.c:619
+msgid "value120 must be from -12000 to 12000"
+msgstr "value120 必须在 -12000 到 12000 之间"
+
+#: native/agentseatd.c:641
+msgid "text exceeds the native AgentSeat input limit"
+msgstr "文本超过原生 AgentSeat 输入限制"
+
+#: native/agentseatd.c:647
+msgid "interval_ms must be from 0 to 10000"
+msgstr "interval_ms 必须在 0 到 10000 之间"
+
+#: native/agentseatd.c:676
+msgid "keyboard.key requires keycode and pressed"
+msgstr "keyboard.key 需要 keycode 和 pressed"
+
+#: native/agentseatd.c:681
+msgid "keycode must be an evdev code from 0 to 767"
+msgstr "keycode 必须是 0 到 767 之间的 evdev 代码"
+
+#: native/agentseatd.c:698
+msgid "Unknown native AgentSeat method"
+msgstr "未知的原生 AgentSeat 方法"
+
+#: native/agentseatd.c:717
+msgid "method must be a non-empty string"
+msgstr "method 必须是非空字符串"
+
+#: native/agentseatd.c:722
+msgid "params must be an object"
+msgstr "params 必须是对象"
+
+#: native/agentseatd.c:740
+msgid "Native AgentSeat request failed"
+msgstr "原生 AgentSeat 请求失败"
+
+#: native/agentseatd.c:767
+msgid "Cannot create AgentSeat runtime directory"
+msgstr "无法创建 AgentSeat 运行时目录"
+
+#: native/agentseatd.c:773
+msgid "Cannot create AgentSeat Unix socket"
+msgstr "无法创建 AgentSeat Unix 套接字"
+
+#: native/agentseatd.c:778
+msgid "AgentSeat socket path is too long"
+msgstr "AgentSeat 套接字路径过长"
+
+#: native/agentseatd.c:783
+msgid "Cannot bind AgentSeat Unix socket"
+msgstr "无法绑定 AgentSeat Unix 套接字"
+
+#: native/agentseatd.c:789
+msgid "Cannot create AgentSeat activity runtime directory"
+msgstr "无法创建 AgentSeat 活动运行时目录"
+
+#: native/agentseatd.c:795
+msgid "Cannot create AgentSeat human activity socket"
+msgstr "无法创建 AgentSeat 人类活动套接字"
+
+#: native/agentseatd.c:800
+msgid "AgentSeat activity socket path is too long"
+msgstr "AgentSeat 活动套接字路径过长"
+
+#: native/agentseatd.c:805
+msgid "Cannot bind AgentSeat human activity socket"
+msgstr "无法绑定 AgentSeat 人类活动套接字"
+
+#: native/agentseatd.c:850
+msgid "input dispatch failed"
+msgstr "输入分发失败"
+
+#: native/agentseatd.c:874
+#, c-format
+msgid ""
+"usage: %s --socket PATH --activity-socket PATH [--human-grace-ms N] [--"
+"workspace N] [--seat-id ID] [--seat-name NAME] [--app-id ID] [--window-title "
+"TITLE] [--xwayland] [--width N] [--height N]\n"
+msgstr ""
+"用法：%s --socket 路径 --activity-socket 路径 [--human-grace-ms N] [--"
+"workspace N] [--seat-id ID] [--seat-name 名称] [--app-id ID] [--window-title "
+"标题] [--xwayland] [--width N] [--height N]\n"
+
+#: native/agentseat-input.c:280
+msgid "xkb_context_new failed"
+msgstr "xkb_context_new 失败"
+
+#: native/agentseat-input.c:285
+#, c-format
+msgid "Cannot compile XKB keymap for layout %s"
+msgstr "无法为布局 %s 编译 XKB 键盘映射"
+
+#: native/agentseat-input.c:290
+msgid "xkb_state_new failed"
+msgstr "xkb_state_new 失败"
+
+#: native/agentseat-input.c:296
+msgid "Cannot serialize XKB keymap"
+msgstr "无法序列化 XKB 键盘映射"
+
+#: native/agentseat-input.c:303
+#, c-format
+msgid "Cannot allocate keymap memfd: %s"
+msgstr "无法分配键盘映射 memfd：%s"
+
+#: native/agentseat-input.c:433
+msgid "An AgentSeat input scope already exists"
+msgstr "AgentSeat 输入范围已存在"
+
+#: native/agentseat-input.c:440
+#, c-format
+msgid "Required globals missing: seat=%d keyboard=%d pointer=%d"
+msgstr "缺少必需的全局对象：seat=%d keyboard=%d pointer=%d"
+
+#: native/agentseat-input.c:454
+#, c-format
+msgid "Cannot bind AgentSeat micro-host seat global %u"
+msgstr "无法绑定 AgentSeat 微宿主席位全局对象 %u"
+
+#: native/agentseat-input.c:465
+msgid "Cannot create virtual keyboard or pointer"
+msgstr "无法创建虚拟键盘或指针"
+
+#: native/agentseat-input.c:506
+msgid "Cannot connect to WAYLAND_DISPLAY"
+msgstr "无法连接 WAYLAND_DISPLAY"
+
+#: native/agentseat-input.c:511
+msgid "wl_display_get_registry failed"
+msgstr "wl_display_get_registry 失败"
+
+#: native/agentseat-input.c:516
+msgid "Wayland registry roundtrip failed"
+msgstr "Wayland 注册表往返失败"
+
+#: native/agentseat-input.c:551 native/agentseat-input.c:615
+#: native/agentseat-input.c:626
+msgid "AgentSeat input scope is not created"
+msgstr "AgentSeat 输入范围尚未创建"
+
+#: native/agentseat-input.c:555
+msgid "AgentSeat input scope is paused"
+msgstr "AgentSeat 输入范围已暂停"
+
+#: native/agentseat-input.c:564
+msgid "Cannot allocate AgentSeat input state"
+msgstr "无法分配 AgentSeat 输入状态"
+
+#: native/agentseat-input.c:591
+msgid "AgentSeat Wayland input connection was lost"
+msgstr "AgentSeat Wayland 输入连接已断开"
+
+#: native/agentseat-input.c:648
+msgid "Cannot flush AgentSeat input events"
+msgstr "无法刷新 AgentSeat 输入事件"
+
+#: native/agentseat-input.c:666
+msgid "Pointer coordinates must be normalized from 0 to 1"
+msgstr "指针坐标必须归一化到 0 到 1"
+
+#: native/agentseat-input.c:692
+msgid "Button code is outside the supported range"
+msgstr "按钮代码超出支持范围"
+
+#: native/agentseat-input.c:741
+msgid "Keycode is outside the supported range"
+msgstr "键码超出支持范围"
+
+#: native/agentseat-input.c:768
+msgid "Cannot allocate text input buffer"
+msgstr "无法分配文本输入缓冲区"
+
+#: native/agentseat-input.c:781
+msgid ""
+"Text contains invalid UTF-8 or a character unavailable in the configured XKB "
+"keymap"
+msgstr "文本包含无效 UTF-8，或包含当前 XKB 键盘映射不可用的字符"
+
+#: native/agentseat-input.c:789
+msgid "A key became unavailable while typing"
+msgstr "输入时某个按键变得不可用"
+
+#: native/agentseat-input.c:798
+msgid "Cannot flush AgentSeat keyboard events"
+msgstr "无法刷新 AgentSeat 键盘事件"

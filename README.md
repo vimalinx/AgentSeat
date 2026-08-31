@@ -48,7 +48,7 @@ rendered inside that tree, not as a global desktop overlay.
 
 The current release targets Linux with a Hyprland host and requires:
 
-- C17 compiler, CMake, Meson, and Ninja;
+- C17 compiler, CMake, Meson, Ninja, and GNU gettext tools;
 - wlroots 0.20, Wayland, Wayland protocols, and libxkbcommon;
 - json-c, GTK 4, and gtk4-layer-shell;
 - `grim` and `wl-clipboard` at runtime;
@@ -57,7 +57,7 @@ The current release targets Linux with a Hyprland host and requires:
 
 On Arch Linux, the corresponding package names include `base-devel`, `cmake`,
 `meson`, `ninja`, `wlroots0.20`, `wayland`, `wayland-protocols`, `libxkbcommon`,
-`json-c`, `gtk4`, `gtk4-layer-shell`, `grim`, and `wl-clipboard`.
+`json-c`, `gtk4`, `gtk4-layer-shell`, `gettext`, `grim`, and `wl-clipboard`.
 
 ## Build and install
 
@@ -114,6 +114,23 @@ The collaboration head is hidden by default. Set `eye_hud = true` in
 `~/.config/agentseat/config.toml` to make it appear automatically, or run
 `agentseat hud start` for the current AgentSeat session. Observation, virtual
 input, and focus isolation do not depend on the head.
+
+## Language
+
+AgentSeat follows the system language by default and currently ships complete
+English, Simplified Chinese, and Traditional Chinese interfaces. Configure a
+persistent choice in `~/.config/agentseat/config.toml`:
+
+```toml
+[general]
+language = "zh-CN" # auto, en, zh-CN, or zh-TW
+```
+
+Use `agentseat --language zh-TW --help` for one command, or set
+`AGENTSEAT_LANGUAGE` for one process tree. The order is command-line override,
+environment override, configuration, then the system locale. Unsupported
+locales fall back to English. JSON keys, enum values, RPC methods, and error
+codes remain stable across languages.
 
 ## Data and privacy
 

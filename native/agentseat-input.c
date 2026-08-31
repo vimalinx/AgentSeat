@@ -15,6 +15,7 @@
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
+#include "agentseat-i18n.h"
 #include "agentseat-input.h"
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
 #include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
@@ -276,30 +277,30 @@ static bool init_keyboard(struct input_state* self, char* error, size_t error_si
 
     self->xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     if (!self->xkb_context) {
-        snprintf(error, error_size, "xkb_context_new failed");
+        snprintf(error, error_size, "%s", AS_TR("xkb_context_new failed"));
         return false;
     }
     self->xkb_keymap = xkb_keymap_new_from_names(self->xkb_context, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
     if (!self->xkb_keymap) {
-        snprintf(error, error_size, "Cannot compile XKB keymap for layout %s", names.layout);
+        snprintf(error, error_size, AS_TR("Cannot compile XKB keymap for layout %s"), names.layout);
         return false;
     }
     self->xkb_state = xkb_state_new(self->xkb_keymap);
     if (!self->xkb_state) {
-        snprintf(error, error_size, "xkb_state_new failed");
+        snprintf(error, error_size, "%s", AS_TR("xkb_state_new failed"));
         return false;
     }
 
     char* keymap = xkb_keymap_get_as_string(self->xkb_keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
     if (!keymap) {
-        snprintf(error, error_size, "Cannot serialize XKB keymap");
+        snprintf(error, error_size, "%s", AS_TR("Cannot serialize XKB keymap"));
         return false;
     }
     size_t size = strlen(keymap) + 1;
     int fd = create_keymap_fd(keymap, size);
     free(keymap);
     if (fd < 0) {
-        snprintf(error, error_size, "Cannot allocate keymap memfd: %s", strerror(errno));
+        snprintf(error, error_size, AS_TR("Cannot allocate keymap memfd: %s"), strerror(errno));
         return false;
     }
     zwp_virtual_keyboard_v1_keymap(self->keyboard, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, (uint32_t)size);
@@ -429,14 +430,14 @@ static bool create_seat(
     char* error,
     size_t error_size) {
     if (self->created) {
-        snprintf(error, error_size, "An AgentSeat input scope already exists");
+        snprintf(error, error_size, "%s", AS_TR("An AgentSeat input scope already exists"));
         return false;
     }
     if (!self->keyboard_manager || !self->pointer_manager || !self->target_global) {
         snprintf(
             error,
             error_size,
-            "Required globals missing: seat=%d keyboard=%d pointer=%d",
+            AS_TR("Required globals missing: seat=%d keyboard=%d pointer=%d"),
             self->target_global != 0,
             self->keyboard_manager != NULL,
             self->pointer_manager != NULL);
@@ -447,7 +448,11 @@ static bool create_seat(
     snprintf(self->seat_name, sizeof(self->seat_name), "%s", name);
     bind_target_seat(self);
     if (!self->seat) {
-        snprintf(error, error_size, "Cannot bind AgentSeat micro-host seat global %u", self->target_global);
+        snprintf(
+            error,
+            error_size,
+            AS_TR("Cannot bind AgentSeat micro-host seat global %u"),
+            self->target_global);
         destroy_seat(self);
         return false;
     }
@@ -457,7 +462,7 @@ static bool create_seat(
         ? zwlr_virtual_pointer_manager_v1_create_virtual_pointer_with_output(self->pointer_manager, self->seat, self->output)
         : zwlr_virtual_pointer_manager_v1_create_virtual_pointer(self->pointer_manager, self->seat);
     if (!self->keyboard || !self->pointer) {
-        snprintf(error, error_size, "Cannot create virtual keyboard or pointer");
+        snprintf(error, error_size, "%s", AS_TR("Cannot create virtual keyboard or pointer"));
         destroy_seat(self);
         return false;
     }
@@ -498,17 +503,17 @@ static bool input_state_init(struct input_state* self, char* error, size_t error
 
     self->display = wl_display_connect(NULL);
     if (!self->display) {
-        snprintf(error, error_size, "Cannot connect to WAYLAND_DISPLAY");
+        snprintf(error, error_size, "%s", AS_TR("Cannot connect to WAYLAND_DISPLAY"));
         return false;
     }
     self->registry = wl_display_get_registry(self->display);
     if (!self->registry) {
-        snprintf(error, error_size, "wl_display_get_registry failed");
+        snprintf(error, error_size, "%s", AS_TR("wl_display_get_registry failed"));
         return false;
     }
     wl_registry_add_listener(self->registry, &registry_listener, self);
     if (wl_display_roundtrip(self->display) < 0 || wl_display_roundtrip(self->display) < 0) {
-        snprintf(error, error_size, "Wayland registry roundtrip failed");
+        snprintf(error, error_size, "%s", AS_TR("Wayland registry roundtrip failed"));
         return false;
     }
     return true;
@@ -543,11 +548,11 @@ static const struct input_state* input_state_const(const struct agentseat_input*
 
 static bool require_input_active(struct input_state* self, char* error, size_t error_size) {
     if (!self || !self->created) {
-        snprintf(error, error_size, "AgentSeat input scope is not created");
+        snprintf(error, error_size, "%s", AS_TR("AgentSeat input scope is not created"));
         return false;
     }
     if (self->paused) {
-        snprintf(error, error_size, "AgentSeat input scope is paused");
+        snprintf(error, error_size, "%s", AS_TR("AgentSeat input scope is paused"));
         return false;
     }
     return true;
@@ -556,7 +561,7 @@ static bool require_input_active(struct input_state* self, char* error, size_t e
 struct agentseat_input* agentseat_input_open(char* error, size_t error_size) {
     struct input_state* self = calloc(1, sizeof(*self));
     if (!self) {
-        snprintf(error, error_size, "Cannot allocate AgentSeat input state");
+        snprintf(error, error_size, "%s", AS_TR("Cannot allocate AgentSeat input state"));
         return NULL;
     }
     if (!input_state_init(self, error, error_size)) {
@@ -583,7 +588,7 @@ int agentseat_input_fd(const struct agentseat_input* input) {
 bool agentseat_input_dispatch(struct agentseat_input* input, char* error, size_t error_size) {
     struct input_state* self = input_state(input);
     if (!self || !self->display || wl_display_dispatch(self->display) < 0) {
-        snprintf(error, error_size, "AgentSeat Wayland input connection was lost");
+        snprintf(error, error_size, "%s", AS_TR("AgentSeat Wayland input connection was lost"));
         return false;
     }
     return true;
@@ -607,7 +612,7 @@ void agentseat_input_destroy(struct agentseat_input* input) {
 bool agentseat_input_pause(struct agentseat_input* input, char* error, size_t error_size) {
     struct input_state* self = input_state(input);
     if (!self || !self->created) {
-        snprintf(error, error_size, "AgentSeat input scope is not created");
+        snprintf(error, error_size, "%s", AS_TR("AgentSeat input scope is not created"));
         return false;
     }
     release_all(self);
@@ -618,7 +623,7 @@ bool agentseat_input_pause(struct agentseat_input* input, char* error, size_t er
 bool agentseat_input_resume(struct agentseat_input* input, char* error, size_t error_size) {
     struct input_state* self = input_state(input);
     if (!self || !self->created) {
-        snprintf(error, error_size, "AgentSeat input scope is not created");
+        snprintf(error, error_size, "%s", AS_TR("AgentSeat input scope is not created"));
         return false;
     }
     self->paused = false;
@@ -640,7 +645,7 @@ void agentseat_input_status(const struct agentseat_input* input, struct agentsea
 static bool flush_input(struct input_state* self, char* error, size_t error_size) {
     if (wl_display_flush(self->display) >= 0)
         return true;
-    snprintf(error, error_size, "Cannot flush AgentSeat input events");
+    snprintf(error, error_size, "%s", AS_TR("Cannot flush AgentSeat input events"));
     return false;
 }
 
@@ -654,7 +659,11 @@ bool agentseat_input_move_absolute(
     if (!require_input_active(self, error, error_size))
         return false;
     if (!isfinite(x) || !isfinite(y) || x < 0.0 || x > 1.0 || y < 0.0 || y > 1.0) {
-        snprintf(error, error_size, "Pointer coordinates must be normalized from 0 to 1");
+        snprintf(
+            error,
+            error_size,
+            "%s",
+            AS_TR("Pointer coordinates must be normalized from 0 to 1"));
         return false;
     }
     self->pointer_x = x;
@@ -680,7 +689,7 @@ bool agentseat_input_button(
     if (!require_input_active(self, error, error_size))
         return false;
     if (button >= MAX_TRACKED_BUTTONS) {
-        snprintf(error, error_size, "Button code is outside the supported range");
+        snprintf(error, error_size, "%s", AS_TR("Button code is outside the supported range"));
         return false;
     }
     if (self->pressed_buttons[button] != pressed) {
@@ -729,7 +738,7 @@ bool agentseat_input_key(
     if (!require_input_active(self, error, error_size))
         return false;
     if (keycode >= MAX_TRACKED_KEYS) {
-        snprintf(error, error_size, "Keycode is outside the supported range");
+        snprintf(error, error_size, "%s", AS_TR("Keycode is outside the supported range"));
         return false;
     }
     if (self->pressed_keys[keycode] != pressed) {
@@ -756,7 +765,7 @@ bool agentseat_input_type(
     const size_t byte_length = strlen(text);
     uint32_t* codepoints = calloc(byte_length + 1, sizeof(*codepoints));
     if (!codepoints) {
-        snprintf(error, error_size, "Cannot allocate text input buffer");
+        snprintf(error, error_size, "%s", AS_TR("Cannot allocate text input buffer"));
         return false;
     }
     size_t offset = 0;
@@ -765,7 +774,11 @@ bool agentseat_input_type(
         uint32_t codepoint = 0;
         if (!utf8_next(bytes, byte_length, &offset, &codepoint) || !supported_codepoint(self, codepoint)) {
             *unsupported = true;
-            snprintf(error, error_size, "Text contains invalid UTF-8 or a character unavailable in the configured XKB keymap");
+            snprintf(
+                error,
+                error_size,
+                "%s",
+                AS_TR("Text contains invalid UTF-8 or a character unavailable in the configured XKB keymap"));
             free(codepoints);
             return false;
         }
@@ -773,7 +786,7 @@ bool agentseat_input_type(
     }
     for (size_t i = 0; i < count; ++i) {
         if (!type_codepoint(self, self->keyboard, codepoints[i])) {
-            snprintf(error, error_size, "A key became unavailable while typing");
+            snprintf(error, error_size, "%s", AS_TR("A key became unavailable while typing"));
             free(codepoints);
             return false;
         }
@@ -782,7 +795,7 @@ bool agentseat_input_type(
     }
     free(codepoints);
     if (wl_display_flush(self->display) < 0) {
-        snprintf(error, error_size, "Cannot flush AgentSeat keyboard events");
+        snprintf(error, error_size, "%s", AS_TR("Cannot flush AgentSeat keyboard events"));
         return false;
     }
     *typed = count;
