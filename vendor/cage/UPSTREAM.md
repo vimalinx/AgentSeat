@@ -15,6 +15,12 @@ support. Local changes are deliberately scoped to the collaboration wrapper:
 - own and terminate the launched application's process group on shutdown;
 - route virtual input to the focused application surface, including the
   private XWayland single-app root-surface case.
+- preserve application-requested top-level and dialog geometry, honor managed
+  XWayland configure requests, center transient children on their parent, and
+  constrain only surfaces which exceed the private output;
+- keep mapped GUI surfaces alive when a short-lived launcher hands work to a
+  resident process, while retaining bounded failed-launch cleanup and owned
+  process-group teardown;
 - expose current and legacy Wayland data-control managers only on the private
   micro-host socket so one-shot Unicode clipboard offers do not require a host
   input serial or touch the host clipboard;

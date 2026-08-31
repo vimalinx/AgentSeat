@@ -78,6 +78,11 @@ struct cg_server {
 	bool xdg_decoration;
 	bool allow_vt_switch;
 	bool return_app_code;
+	bool primary_client_exited;
+	bool application_mapped_once;
+	unsigned application_view_count;
+	struct wl_event_source *primary_client_source;
+	struct wl_event_source *primary_exit_timer;
 	bool terminated;
 	enum wlr_log_importance log_level;
 };

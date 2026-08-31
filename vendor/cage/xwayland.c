@@ -64,7 +64,7 @@ is_primary(struct cg_view *view)
 static bool
 is_transient_for(struct cg_view *child, struct cg_view *parent)
 {
-	if (parent->type != CAGE_XDG_SHELL_VIEW) {
+	if (parent->type != CAGE_XWAYLAND_VIEW) {
 		return false;
 	}
 	struct cg_xwayland_view *_child = xwayland_view_from_view(child);
@@ -88,12 +88,13 @@ activate(struct cg_view *view, bool activate)
 }
 
 static void
-maximize(struct cg_view *view, int output_width, int output_height)
+configure(struct cg_view *view, int width, int height, bool maximized)
 {
 	struct cg_xwayland_view *xwayland_view = xwayland_view_from_view(view);
-	wlr_xwayland_surface_configure(xwayland_view->xwayland_surface, view->lx, view->ly, output_width,
-				       output_height);
-	wlr_xwayland_surface_set_maximized(xwayland_view->xwayland_surface, true, true);
+	if (width > 0 && height > 0) {
+		wlr_xwayland_surface_configure(xwayland_view->xwayland_surface, view->lx, view->ly, width, height);
+	}
+	wlr_xwayland_surface_set_maximized(xwayland_view->xwayland_surface, maximized, maximized);
 }
 
 static void
@@ -108,6 +109,24 @@ close(struct cg_view *view)
 {
 	struct cg_xwayland_view *xwayland_view = xwayland_view_from_view(view);
 	wlr_xwayland_surface_close(xwayland_view->xwayland_surface);
+}
+
+static void
+handle_xwayland_surface_request_configure(struct wl_listener *listener, void *data)
+{
+	struct cg_xwayland_view *xwayland_view = wl_container_of(listener, xwayland_view, request_configure);
+	struct wlr_xwayland_surface *xsurface = xwayland_view->xwayland_surface;
+	struct wlr_xwayland_surface_configure_event *event = data;
+	int width = event->mask & XCB_CONFIG_WINDOW_WIDTH ? event->width : xsurface->width;
+	int height = event->mask & XCB_CONFIG_WINDOW_HEIGHT ? event->height : xsurface->height;
+
+	if (xsurface->override_redirect) {
+		int x = event->mask & XCB_CONFIG_WINDOW_X ? event->x : xsurface->x;
+		int y = event->mask & XCB_CONFIG_WINDOW_Y ? event->y : xsurface->y;
+		wlr_xwayland_surface_configure(xsurface, x, y, width, height);
+		return;
+	}
+	view_configure_requested(&xwayland_view->view, width, height);
 }
 
 static void
@@ -163,6 +182,7 @@ handle_xwayland_surface_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&xwayland_view->associate.link);
 	wl_list_remove(&xwayland_view->dissociate.link);
 	wl_list_remove(&xwayland_view->destroy.link);
+	wl_list_remove(&xwayland_view->request_configure.link);
 	wl_list_remove(&xwayland_view->request_fullscreen.link);
 	xwayland_view->xwayland_surface = NULL;
 
@@ -175,7 +195,7 @@ static const struct cg_view_impl xwayland_view_impl = {
 	.is_primary = is_primary,
 	.is_transient_for = is_transient_for,
 	.activate = activate,
-	.maximize = maximize,
+	.configure = configure,
 	.destroy = destroy,
 	.close = close,
 };
@@ -221,6 +241,8 @@ handle_xwayland_surface_new(struct wl_listener *listener, void *data)
 	wl_signal_add(&xwayland_surface->events.dissociate, &xwayland_view->dissociate);
 	xwayland_view->destroy.notify = handle_xwayland_surface_destroy;
 	wl_signal_add(&xwayland_surface->events.destroy, &xwayland_view->destroy);
+	xwayland_view->request_configure.notify = handle_xwayland_surface_request_configure;
+	wl_signal_add(&xwayland_surface->events.request_configure, &xwayland_view->request_configure);
 	xwayland_view->request_fullscreen.notify = handle_xwayland_surface_request_fullscreen;
 	wl_signal_add(&xwayland_surface->events.request_fullscreen, &xwayland_view->request_fullscreen);
 }

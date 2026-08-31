@@ -178,11 +178,11 @@ activate(struct cg_view *view, bool activate)
 }
 
 static void
-maximize(struct cg_view *view, int output_width, int output_height)
+configure(struct cg_view *view, int width, int height, bool maximized)
 {
 	struct cg_xdg_shell_view *xdg_shell_view = xdg_shell_view_from_view(view);
-	wlr_xdg_toplevel_set_size(xdg_shell_view->xdg_toplevel, output_width, output_height);
-	wlr_xdg_toplevel_set_maximized(xdg_shell_view->xdg_toplevel, true);
+	wlr_xdg_toplevel_set_size(xdg_shell_view->xdg_toplevel, width, height);
+	wlr_xdg_toplevel_set_maximized(xdg_shell_view->xdg_toplevel, maximized);
 }
 
 static void
@@ -344,7 +344,7 @@ static const struct cg_view_impl xdg_shell_view_impl = {
 	.is_primary = is_primary,
 	.is_transient_for = is_transient_for,
 	.activate = activate,
-	.maximize = maximize,
+	.configure = configure,
 	.destroy = destroy,
 	.close = close,
 };

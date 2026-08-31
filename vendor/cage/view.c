@@ -46,6 +46,9 @@ view_is_primary(struct cg_view *view)
 bool
 view_is_transient_for(struct cg_view *child, struct cg_view *parent)
 {
+	if (!child || !parent || child == parent) {
+		return false;
+	}
 	return child->impl->is_transient_for(child, parent);
 }
 
@@ -55,6 +58,12 @@ view_is_agentseat_overlay(struct cg_view *view)
 	return view && view->agentseat_overlay;
 }
 
+bool
+view_has_application_views(struct cg_server *server)
+{
+	return server->application_view_count > 0;
+}
+
 void
 view_activate(struct cg_view *view, bool activate)
 {
@@ -62,40 +71,66 @@ view_activate(struct cg_view *view, bool activate)
 	wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel_handle, activate);
 }
 
-static bool
-view_extends_output_layout(struct cg_view *view, struct wlr_box *layout_box)
-{
-	int width, height;
-	view->impl->get_geometry(view, &width, &height);
-
-	return (layout_box->height < height || layout_box->width < width);
-}
-
 static void
-view_maximize(struct cg_view *view, struct wlr_box *layout_box)
+view_center(struct cg_view *view, const struct wlr_box *container_box, const struct wlr_box *layout_box, int width,
+	    int height)
 {
-	view->lx = layout_box->x;
-	view->ly = layout_box->y;
+	view->lx = container_box->x + (container_box->width - width) / 2;
+	view->ly = container_box->y + (container_box->height - height) / 2;
+	int max_x = layout_box->x + layout_box->width - width;
+	int max_y = layout_box->y + layout_box->height - height;
+	if (max_x < layout_box->x)
+		max_x = layout_box->x;
+	if (max_y < layout_box->y)
+		max_y = layout_box->y;
+	view->lx = view->lx < layout_box->x ? layout_box->x : (view->lx > max_x ? max_x : view->lx);
+	view->ly = view->ly < layout_box->y ? layout_box->y : (view->ly > max_y ? max_y : view->ly);
 
 	if (view->scene_tree) {
 		wlr_scene_node_set_position(&view->scene_tree->node, view->lx, view->ly);
 	}
-
-	view->impl->maximize(view, layout_box->width, layout_box->height);
 }
 
-static void
-view_center(struct cg_view *view, struct wlr_box *layout_box)
+static struct cg_view *
+view_transient_parent(struct cg_view *view)
 {
-	int width, height;
-	view->impl->get_geometry(view, &width, &height);
-
-	view->lx = (layout_box->width - width) / 2;
-	view->ly = (layout_box->height - height) / 2;
-
-	if (view->scene_tree) {
-		wlr_scene_node_set_position(&view->scene_tree->node, view->lx, view->ly);
+	struct cg_view *candidate;
+	wl_list_for_each (candidate, &view->server->views, link) {
+		if (!view_is_agentseat_overlay(candidate) && view_is_transient_for(view, candidate)) {
+			return candidate;
+		}
 	}
+	return NULL;
+}
+
+void
+view_configure_requested(struct cg_view *view, int width, int height)
+{
+	struct wlr_box layout_box;
+	wlr_output_layout_get_box(view->server->output_layout, NULL, &layout_box);
+	if (width <= 0 || height <= 0) {
+		/* A zero-sized XDG configure lets the client choose its natural initial
+		 * geometry instead of inheriting the private output's kiosk dimensions. */
+		view->impl->configure(view, 0, 0, false);
+		return;
+	}
+
+	int constrained_width = width > layout_box.width ? layout_box.width : width;
+	int constrained_height = height > layout_box.height ? layout_box.height : height;
+	struct wlr_box container_box = layout_box;
+	struct cg_view *parent = view_transient_parent(view);
+	if (parent) {
+		int parent_width = 0, parent_height = 0;
+		parent->impl->get_geometry(parent, &parent_width, &parent_height);
+		if (parent_width > 0 && parent_height > 0) {
+			container_box.x = parent->lx;
+			container_box.y = parent->ly;
+			container_box.width = parent_width;
+			container_box.height = parent_height;
+		}
+	}
+	view_center(view, &container_box, &layout_box, constrained_width, constrained_height);
+	view->impl->configure(view, constrained_width, constrained_height, false);
 }
 
 void
@@ -145,11 +180,9 @@ view_position(struct cg_view *view)
 		return;
 	}
 
-	if (view_is_primary(view) || view_extends_output_layout(view, &layout_box)) {
-		view_maximize(view, &layout_box);
-	} else {
-		view_center(view, &layout_box);
-	}
+	int width = 0, height = 0;
+	view->impl->get_geometry(view, &width, &height);
+	view_configure_requested(view, width, height);
 }
 
 void
@@ -238,6 +271,11 @@ view_map(struct cg_view *view, struct wlr_surface *surface)
 	wl_signal_add(&view->foreign_toplevel_handle->events.request_activate, &view->request_activate);
 	view->request_close.notify = handle_surface_request_close;
 	wl_signal_add(&view->foreign_toplevel_handle->events.request_close, &view->request_close);
+	if (!view_is_agentseat_overlay(view) && !view->application_lifetime_counted) {
+		view->application_lifetime_counted = true;
+		view->server->application_mapped_once = true;
+		view->server->application_view_count++;
+	}
 
 	if (!view_is_agentseat_overlay(view) || previous == NULL)
 		seat_set_focus(view->server->seat, view);
@@ -273,6 +311,14 @@ view_destroy(struct cg_view *view)
 
 	if (view->wlr_surface != NULL) {
 		view_unmap(view);
+	}
+	if (view->application_lifetime_counted) {
+		assert(server->application_view_count > 0);
+		view->application_lifetime_counted = false;
+		server->application_view_count--;
+		if (server->primary_client_exited && !view_has_application_views(server)) {
+			server_terminate(server);
+		}
 	}
 
 	view->impl->destroy(view);

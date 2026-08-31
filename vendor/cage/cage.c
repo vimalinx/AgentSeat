@@ -67,6 +67,8 @@
 #include "xwayland.h"
 #endif
 
+#define PRIMARY_EXIT_GRACE_MS 15000
+
 void
 server_terminate(struct cg_server *server)
 {
@@ -99,6 +101,17 @@ handle_drm_lease_request(struct wl_listener *listener, void *data)
 #endif
 
 static int
+primary_exit_grace_handler(void *data)
+{
+	struct cg_server *server = data;
+	if (!view_has_application_views(server)) {
+		wlr_log(WLR_DEBUG, "Primary launcher exited without an application surface");
+		server_terminate(server);
+	}
+	return 0;
+}
+
+static int
 sigchld_handler(int fd, uint32_t mask, void *data)
 {
 	struct cg_server *server = data;
@@ -113,7 +126,19 @@ sigchld_handler(int fd, uint32_t mask, void *data)
 	}
 
 	server->return_app_code = true;
-	server_terminate(server);
+	server->primary_client_exited = true;
+	if (server->primary_client_source) {
+		wl_event_source_remove(server->primary_client_source);
+		server->primary_client_source = NULL;
+	}
+	if (view_has_application_views(server)) {
+		wlr_log(WLR_DEBUG, "Primary launcher exited; keeping mapped application surfaces alive");
+	} else if (server->application_mapped_once) {
+		server_terminate(server);
+	} else if (!server->primary_exit_timer ||
+		   wl_event_source_timer_update(server->primary_exit_timer, PRIMARY_EXIT_GRACE_MS) < 0) {
+		server_terminate(server);
+	}
 	return 0;
 }
 
@@ -137,7 +162,7 @@ set_cloexec(int fd)
 }
 
 static bool
-spawn_primary_client(struct cg_server *server, char *argv[], pid_t *pid_out, struct wl_event_source **sigchld_source)
+spawn_primary_client(struct cg_server *server, char *argv[], pid_t *pid_out)
 {
 	int fd[2];
 	if (pipe(fd) != 0) {
@@ -174,19 +199,42 @@ spawn_primary_client(struct cg_server *server, char *argv[], pid_t *pid_out, str
 
 	struct wl_event_loop *event_loop = wl_display_get_event_loop(server->wl_display);
 	uint32_t mask = WL_EVENT_HANGUP | WL_EVENT_ERROR;
-	*sigchld_source = wl_event_loop_add_fd(event_loop, fd[0], mask, sigchld_handler, server);
+	server->primary_client_source = wl_event_loop_add_fd(event_loop, fd[0], mask, sigchld_handler, server);
+	if (!server->primary_client_source) {
+		close(fd[0]);
+		return false;
+	}
 
 	wlr_log(WLR_DEBUG, "Child process created with pid %d", pid);
 	return true;
 }
 
+static void
+terminate_remaining_process_group(pid_t pid)
+{
+	if (kill(-pid, SIGTERM) < 0 && errno != ESRCH) {
+		wlr_log_errno(WLR_ERROR, "Unable to terminate primary client process group");
+	}
+	for (int attempt = 0; attempt < 10; ++attempt) {
+		if (kill(-pid, 0) < 0 && errno == ESRCH)
+			return;
+		struct timespec pause = {.tv_nsec = 20000000L};
+		nanosleep(&pause, NULL);
+	}
+	if (kill(-pid, SIGKILL) < 0 && errno != ESRCH) {
+		wlr_log_errno(WLR_ERROR, "Unable to kill primary client process group");
+	}
+}
+
 static int
-cleanup_primary_client(pid_t pid, bool terminate)
+cleanup_primary_client(pid_t pid)
 {
 	int status = 0;
-	pid_t waited = 0;
-	if (terminate) {
-		kill(-pid, SIGTERM);
+	pid_t waited = waitpid(pid, &status, WNOHANG);
+	if (waited == 0) {
+		if (kill(-pid, SIGTERM) < 0 && errno != ESRCH) {
+			wlr_log_errno(WLR_ERROR, "Unable to terminate primary client process group");
+		}
 		for (int attempt = 0; attempt < 50; ++attempt) {
 			waited = waitpid(pid, &status, WNOHANG);
 			if (waited == pid)
@@ -195,14 +243,15 @@ cleanup_primary_client(pid_t pid, bool terminate)
 			nanosleep(&pause, NULL);
 		}
 		if (waited == 0) {
-			kill(-pid, SIGKILL);
+			if (kill(-pid, SIGKILL) < 0 && errno != ESRCH) {
+				wlr_log_errno(WLR_ERROR, "Unable to kill primary client process group");
+			}
 			waited = waitpid(pid, &status, 0);
 		}
-	} else {
-		waited = waitpid(pid, &status, 0);
 	}
 	if (waited != pid)
 		return 1;
+	terminate_remaining_process_group(pid);
 
 	if (WIFEXITED(status)) {
 		wlr_log(WLR_DEBUG, "Child exited normally with exit status %d", WEXITSTATUS(status));
@@ -321,7 +370,6 @@ int
 main(int argc, char *argv[])
 {
 	struct cg_server server = {.log_level = WLR_INFO};
-	struct wl_event_source *sigchld_source = NULL;
 	pid_t pid = 0;
 	int ret = 0, app_ret = 0;
 
@@ -355,6 +403,13 @@ main(int argc, char *argv[])
 	struct wl_event_source *sigint_source = wl_event_loop_add_signal(event_loop, SIGINT, handle_signal, &server);
 	struct wl_event_source *sigterm_source = wl_event_loop_add_signal(event_loop, SIGTERM, handle_signal, &server);
 	struct wl_event_source *sigusr1_source = wl_event_loop_add_signal(event_loop, SIGUSR1, handle_signal, &server);
+	server.primary_exit_timer = wl_event_loop_add_timer(event_loop, primary_exit_grace_handler, &server);
+	if (!server.primary_exit_timer) {
+		/* A missing grace timer only removes support for launchers which exit
+		 * before their resident GUI maps. The normal application path remains
+		 * usable and sigchld_handler will terminate safely. */
+		wlr_log(WLR_ERROR, "Unable to create primary client exit grace timer");
+	}
 
 	server.backend = wlr_backend_autocreate(event_loop, &server.session);
 	if (!server.backend) {
@@ -669,7 +724,7 @@ main(int argc, char *argv[])
 	}
 #endif
 
-	if (optind < argc && !spawn_primary_client(&server, argv + optind, &pid, &sigchld_source)) {
+	if (optind < argc && !spawn_primary_client(&server, argv + optind, &pid)) {
 		ret = 1;
 		goto end;
 	}
@@ -705,15 +760,18 @@ main(int argc, char *argv[])
 
 end:
 	if (pid != 0)
-		app_ret = cleanup_primary_client(pid, !server.return_app_code);
+		app_ret = cleanup_primary_client(pid);
 	if (!ret && server.return_app_code)
 		ret = app_ret;
 
 	wl_event_source_remove(sigint_source);
 	wl_event_source_remove(sigterm_source);
 	wl_event_source_remove(sigusr1_source);
-	if (sigchld_source) {
-		wl_event_source_remove(sigchld_source);
+	if (server.primary_client_source) {
+		wl_event_source_remove(server.primary_client_source);
+	}
+	if (server.primary_exit_timer) {
+		wl_event_source_remove(server.primary_exit_timer);
 	}
 	seat_destroy(server.seat);
 	/* This function is not null-safe, but we only ever get here

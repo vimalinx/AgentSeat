@@ -34,6 +34,7 @@ struct cg_view {
 	bool overlay_anchor_valid;
 	int overlay_anchor_x, overlay_anchor_y;
 	int overlay_last_width, overlay_last_height;
+	bool application_lifetime_counted;
 
 	enum cg_view_type type;
 	const struct cg_view_impl *impl;
@@ -49,7 +50,7 @@ struct cg_view_impl {
 	bool (*is_primary)(struct cg_view *view);
 	bool (*is_transient_for)(struct cg_view *child, struct cg_view *parent);
 	void (*activate)(struct cg_view *view, bool activate);
-	void (*maximize)(struct cg_view *view, int output_width, int output_height);
+	void (*configure)(struct cg_view *view, int width, int height, bool maximized);
 	void (*close)(struct cg_view *view);
 	void (*destroy)(struct cg_view *view);
 };
@@ -58,7 +59,9 @@ char *view_get_title(struct cg_view *view);
 bool view_is_primary(struct cg_view *view);
 bool view_is_transient_for(struct cg_view *child, struct cg_view *parent);
 bool view_is_agentseat_overlay(struct cg_view *view);
+bool view_has_application_views(struct cg_server *server);
 void view_activate(struct cg_view *view, bool activate);
+void view_configure_requested(struct cg_view *view, int width, int height);
 void view_position(struct cg_view *view);
 void view_position_all(struct cg_server *server);
 void view_unmap(struct cg_view *view);

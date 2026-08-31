@@ -43,8 +43,10 @@ The runtime is deliberately small:
 
 Native Wayland applications are the default. A private XWayland lane supports
 legacy X11 software. Dialogs and child windows stay in the same private
-application tree. When explicitly enabled, the small collaboration head is
-rendered inside that tree, not as a global desktop overlay.
+application tree and keep the sizes requested by the application; only windows
+larger than the private output are constrained. When explicitly enabled, the
+small collaboration head is rendered inside that tree, not as a global desktop
+overlay.
 
 > AgentSeat isolates input and focus. It is not a filesystem, process, or network
 > sandbox; the wrapped program still runs as your local user.
@@ -170,6 +172,10 @@ socket and standard Wayland virtual input objects. A reduced Cage 0.3.1 owns
 the private application tree and XWayland server. Observation uses standard
 `wlr-screencopy` against the private output, so it does not capture or move the
 host desktop.
+
+The micro-host follows the GUI surface lifetime rather than assuming the first
+launcher process is the application. A launcher may hand off to a resident GUI
+process and exit without tearing down the AgentSeat session.
 
 The opt-in collaboration head is a private micro-host surface. Human input
 inside the wrapper takes priority and temporarily pauses Agent injection. Agent

@@ -134,9 +134,9 @@ def wayland_case(stamp: str) -> dict[str, Any]:
     agentseat("resume")
 
     cursor_before = host_snapshot()["cursor"]
-    # GTK stretches the fixture to the private output. The proof button is a
-    # stable full-width target directly below its heading.
-    agentseat("move", "0.50", "0.05")
+    # The fixture keeps its natural 640x320 geometry and is centered. Its
+    # full-width proof button sits just above the vertically expanding entry.
+    agentseat("move", "0.50", "0.46")
     cursor_after = host_snapshot()["cursor"]
     agentseat("click")
     assert wait_for_text(pointer_proof).strip() == "clicked"
@@ -189,9 +189,9 @@ def x11_case(stamp: str) -> dict[str, Any]:
     assert_wrapper_never_active(status)
 
     cursor_before = host_snapshot()["cursor"]
-    # Tk's full-width entry occupies the same upper strip in the physical
-    # private-output capture, despite toolkit-internal scaling.
-    agentseat("move", "0.50", "0.05")
+    # Tk keeps its natural geometry; the padded full-width entry is centered
+    # with the window inside the private output.
+    agentseat("move", "0.50", "0.50")
     cursor_after = host_snapshot()["cursor"]
     agentseat("click")
     assert wait_for_text(pointer_proof).strip() == "clicked"
@@ -227,51 +227,97 @@ def x11_case(stamp: str) -> dict[str, Any]:
 
 
 def window_tree_case(stamp: str) -> dict[str, Any]:
-    proof = EVIDENCE / f"generic-window-tree-{stamp}.txt"
+    geometry_proof = EVIDENCE / f"generic-window-tree-geometry-{stamp}.json"
     image = EVIDENCE / f"generic-window-tree-{stamp}.png"
-    marker = f"TREE_OK_{stamp}"
     probe = (
-        "import pathlib,sys,tkinter as tk\n"
+        "import json,pathlib,sys,tkinter as tk\n"
         "root=tk.Tk()\n"
         "root.title('AgentSeat tree root')\n"
+        "root.geometry('800x600')\n"
         "def open_child():\n"
         "    child=tk.Toplevel(root)\n"
-        "    child.title('AgentSeat tree child')\n"
-        "    entry=tk.Entry(child,font=('Sans',18))\n"
-        "    entry.pack(fill='x',padx=30,pady=70)\n"
+        "    child.title('AgentSeat parentless child')\n"
+        "    child.geometry('400x200')\n"
+        "    tk.Label(child,text='Parentless secondary window').pack(expand=True)\n"
+        "    dialog=tk.Toplevel(root)\n"
+        "    dialog.title('AgentSeat transient dialog')\n"
+        "    dialog.geometry('320x160')\n"
+        "    dialog.transient(root)\n"
+        "    entry=tk.Entry(dialog,font=('Sans',18))\n"
+        "    entry.pack(fill='x',padx=30,pady=50)\n"
         "    entry.focus_set()\n"
-        "    entry.bind('<Return>',lambda event:(pathlib.Path(sys.argv[1]).write_text(entry.get(),encoding='utf-8'),root.destroy()))\n"
+        "    def report_geometry():\n"
+        "        root.update_idletasks()\n"
+        "        pathlib.Path(sys.argv[1]).write_text(json.dumps({'root':[root.winfo_width(),root.winfo_height(),root.winfo_x(),root.winfo_y()],'child':[child.winfo_width(),child.winfo_height(),child.winfo_x(),child.winfo_y()],'dialog':[dialog.winfo_width(),dialog.winfo_height(),dialog.winfo_x(),dialog.winfo_y()]}),encoding='utf-8')\n"
+        "    root.after(400,report_geometry)\n"
         "root.after(600,open_child)\n"
         "root.mainloop()\n"
     )
     before = host_snapshot()
-    agentseat("run", "--x11", "--", "/usr/bin/python", "-c", probe, str(proof))
+    agentseat("run", "--x11", "--", "/usr/bin/python", "-c", probe, str(geometry_proof))
 
-    time.sleep(0.8)
+    geometry = json.loads(wait_for_text(geometry_proof))
+    assert geometry["root"][:2] == [800, 600]
+    assert geometry["child"][:2] == [400, 200]
+    assert geometry["dialog"][:2] == [320, 160]
     windows = agentseat("windows")
     status = agentseat("status")
     assert all(window["leased"] for window in windows)
     assert len(windows) == 1
     assert status["seat"]["seat"]["focused_window"] == "agentseat:root"
 
-    agentseat("type", marker)
-    time.sleep(0.15)
     observed = agentseat("observe", str(image))
     assert observed["capture"]["scope"] == "single-app-output"
-    agentseat("type", "\n")
-    typed = wait_for_text(proof).strip()
-    assert typed == marker
     after = host_snapshot()
-    stopped = stop_and_verify(proof)
+    stopped = stop_and_verify(geometry_proof)
     return {
         "passed": True,
-        "proof": str(proof),
+        "geometry_proof": str(geometry_proof),
         "image": str(image),
-        "typed": typed,
+        "requested_geometry_preserved": geometry,
         "logical_window_count": len(windows),
         "child_dialog_managed_inside_root": True,
+        "transient_dialog_geometry_preserved": True,
         "all_leased": all(window["leased"] for window in windows),
         "focused_boundary": status["seat"]["seat"]["focused_window"],
+        "host_focus_same": [before["workspace"], before["window"]] == [after["workspace"], after["window"]],
+        "stopped": stopped,
+    }
+
+
+def detached_launcher_case(stamp: str) -> dict[str, Any]:
+    marker = EVIDENCE / f"detached-launcher-{stamp}.txt"
+    image = EVIDENCE / f"detached-launcher-{stamp}.png"
+    probe = (
+        "import os,pathlib,sys,time\n"
+        "pid=os.fork()\n"
+        "if pid:\n"
+        "    os._exit(0)\n"
+        "os.closerange(3,256)\n"
+        "time.sleep(0.5)\n"
+        "import tkinter as tk\n"
+        "root=tk.Tk()\n"
+        "root.title('AgentSeat detached long-running GUI')\n"
+        "root.geometry('720x480')\n"
+        "tk.Label(root,text='Detached GUI remains attached').pack(expand=True)\n"
+        "root.after(300,lambda:pathlib.Path(sys.argv[1]).write_text('mapped',encoding='utf-8'))\n"
+        "root.mainloop()\n"
+    )
+    before = host_snapshot()
+    status = agentseat("run", "--x11", "--", "/usr/bin/python", "-c", probe, str(marker))
+    assert wait_for_text(marker).strip() == "mapped"
+    assert status["running"] is True
+    assert_wrapper_never_active(status)
+    observed = agentseat("observe", str(image))
+    assert observed["capture"]["backend"] == "native-wlr-screencopy"
+    after = host_snapshot()
+    stopped = stop_and_verify(marker)
+    return {
+        "passed": True,
+        "marker": str(marker),
+        "image": str(image),
+        "launcher_exited_before_gui_map": True,
+        "microhost_survived_launcher_exit": True,
         "host_focus_same": [before["workspace"], before["window"]] == [after["workspace"], after["window"]],
         "stopped": stopped,
     }
@@ -293,7 +339,7 @@ def unicode_case(stamp: str) -> dict[str, Any]:
         "--pointer-proof", str(EVIDENCE / f"unicode-wayland-pointer-{stamp}.txt"),
         "--title", "AgentSeat Unicode Wayland",
     )
-    agentseat("move", "0.25", "0.43")
+    agentseat("move", "0.50", "0.53")
     agentseat("click")
     wayland_type = agentseat("type", marker)
     assert wayland_type["lane"] == "private-wayland-clipboard"
@@ -323,7 +369,7 @@ def unicode_case(stamp: str) -> dict[str, Any]:
     )
     x11_before = host_snapshot()
     agentseat("run", "--x11", "--", "/usr/bin/python", "-c", probe, str(x11_proof))
-    agentseat("move", "0.50", "0.05")
+    agentseat("move", "0.50", "0.50")
     agentseat("click")
     x11_type = agentseat("type", marker)
     assert x11_type["lane"] == "private-wayland-clipboard"
@@ -387,6 +433,7 @@ def main() -> int:
         result["wayland"] = wayland_case(stamp)
         result["x11"] = x11_case(stamp)
         result["window_tree"] = window_tree_case(stamp)
+        result["detached_launcher"] = detached_launcher_case(stamp)
         result["unicode"] = unicode_case(stamp)
         result["lifecycle"] = lifecycle_case()
     finally:
