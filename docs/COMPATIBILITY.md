@@ -29,9 +29,8 @@ read or fixture state); **O** verified by OCR or visual inspection only;
 
 - **ONLYOFFICE**: the inserted text is confirmed by OCR of the private frame, not
   by reading the saved document. The window ran under XWayland even though the
-  launch requested Wayland. The legacy OCR paste lane (now
-  `lib/agentseat_compat_onlyoffice.py`) loads and runs but did not insert text
-  in the same environment, before or after it was moved: **F**.
+  launch requested Wayland. The legacy OCR paste lane for pre-0.5.0 sessions
+  did not insert text in the same environment and was removed in 0.6.0.
 - **WeChat**: buttons that expose only a focus action need a visual click. Some
   embedded subtrees report `bounds_unmapped`; IME candidates keep the top-left
   placement. Only the listed paths were exercised, and no messages were sent.
@@ -41,7 +40,7 @@ read or fixture state); **O** verified by OCR or visual inspection only;
 | Case | Observed | Release, date | Evidence |
 |---|---|---|---|
 | Mousepad Save As driven by AT-SPI | AT-SPI query timed out, then the dialog tree was empty; typed name not shown. Root cause not confirmed. A later keyboard-driven save workflow passed. | `65048e8d2897`, 2026-09-06 | `computer-use-demo-20260906-031753/` |
-| ONLYOFFICE legacy X11 OCR paste | Paste menu found and clicked; text not inserted | source `f54ba9f`, 2026-10-16 | `20261016-review-followups/onlyoffice-compat*/` |
+| ONLYOFFICE legacy X11 OCR paste (removed in 0.6.0) | Paste menu found and clicked; text not inserted | source `f54ba9f`, 2026-10-16 | `20261016-review-followups/onlyoffice-compat*/` |
 
 ## Not yet verified
 

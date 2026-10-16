@@ -7,7 +7,6 @@ import argparse
 import fcntl
 import gettext
 import hashlib
-import importlib.machinery
 import json
 import math
 import os
@@ -1562,15 +1561,6 @@ def keyboard_key(keycode: int, pressed: bool) -> Any:
     return rpc("keyboard.key", {"keycode": keycode, "pressed": pressed})
 
 
-def legacy_onlyoffice_paste(text: str) -> dict[str, Any]:
-    """Load the explicit OnlyOffice compatibility lane for pre-0.5.0 sessions only."""
-    path = ROOT / "lib/agentseat_compat_onlyoffice.py"
-    if not path.is_file():
-        raise AgentSeatError("OnlyOffice compatibility component is not installed; restart the session with `start onlyoffice`")
-    module = importlib.machinery.SourceFileLoader("agentseat_compat_onlyoffice", str(path)).load_module()
-    return module.paste(sys.modules[__name__], text)
-
-
 PASTE_CHUNK_CODEPOINTS = 256
 
 
@@ -2414,20 +2404,13 @@ def main() -> int:
     elif args.command == "key":
         result = keyboard_key(args.keycode, args.state == "down")
     elif args.command == "type":
-        state_value = load_state()
         sync_window_tree()
-        legacy_onlyoffice = state_value.get("compat_type") == "onlyoffice-private-x11-clipboard" or (
-            "launch" not in state_value and state_value.get("preset") == "onlyoffice"
-        )
-        if legacy_onlyoffice:
-            result = legacy_onlyoffice_paste(args.text)
-        else:
-            try:
-                result = type_text(args.text)
-            except AgentSeatError as exc:
-                if not str(exc).startswith("UNSUPPORTED_CHARACTER:"):
-                    raise
-                result = private_unicode_paste(args.text)
+        try:
+            result = type_text(args.text)
+        except AgentSeatError as exc:
+            if not str(exc).startswith("UNSUPPORTED_CHARACTER:"):
+                raise
+            result = private_unicode_paste(args.text)
     elif args.command == "observe":
         result = observe(args.path)
     elif args.command == "doctor":

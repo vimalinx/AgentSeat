@@ -343,9 +343,8 @@ parent window through the normal clipboard protocol, including text, images and
 HTML. Agent clipboard offers remain private; no clipboard content is logged.
 
 The convenience command `start onlyoffice` selects the same native Wayland
-lane as `run`. The legacy private-X11 OCR paste path now lives in the explicit
-compatibility component `lib/agentseat_compat_onlyoffice.py`, loaded only for
-runtime state written before the 0.5.0 release; it is not part of the core.
+lane as `run`. The legacy private-X11 OCR paste path for sessions started
+before 0.5.0 was removed in 0.6.0.
 
 ## Tests
 
