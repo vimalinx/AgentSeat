@@ -19,10 +19,11 @@
 #include "agentseat-i18n.h"
 
 #define RPC_LIMIT (1024U * 1024U)
-#define COLLAPSED_SIZE 52
-#define HEAD_DRAW_SIZE 46
-#define PANEL_WIDTH 320
-#define PANEL_HEIGHT 232
+#define COLLAPSED_SIZE ((int)lround(52 * app_state.ui_scale))
+#define CONTROL_WIDTH ((int)lround(160 * app_state.ui_scale))
+#define HEAD_DRAW_SIZE ((int)lround(46 * app_state.ui_scale))
+#define PANEL_WIDTH ((int)lround(320 * app_state.ui_scale))
+#define PANEL_HEIGHT ((int)lround(232 * app_state.ui_scale))
 #define HUD_CURSOR_SIZE 20
 
 struct eye_app {
@@ -32,6 +33,10 @@ struct eye_app {
     GtkWidget* eye_root;
     GtkWidget* panel_root;
     GtkWidget* head_area;
+    GtkWidget* control_button;
+    bool seat_paused;
+    bool control_known;
+    double ui_scale;
     GtkWidget* activity_label;
     GtkWidget* detail_label;
     GtkWidget* state_label;
@@ -61,9 +66,11 @@ struct eye_app {
     uint64_t rpc_id;
     uint64_t last_message_id;
     char socket_path[108];
+    char session_id[65];
 };
 
 static struct eye_app app_state = {
+    .ui_scale = 1.0,
     .margin_top = 24,
     .margin_right = 24,
 };
@@ -101,7 +108,13 @@ static json_object* rpc_call(const char* method, json_object* params) {
     json_object_object_add(request, "jsonrpc", json_object_new_string("2.0"));
     json_object_object_add(request, "id", json_object_new_int64((int64_t)++app_state.rpc_id));
     json_object_object_add(request, "method", json_object_new_string(method));
-    json_object_object_add(request, "params", params ? json_object_get(params) : json_object_new_object());
+    json_object* payload = params ? json_object_get(params) : json_object_new_object();
+    json_object_object_add(payload, "session_id", json_object_new_string(app_state.session_id));
+    char controller[64];
+    snprintf(controller, sizeof(controller), "hud:%ld", (long)getpid());
+    json_object_object_add(payload, "controller_id", json_object_new_string(controller));
+    json_object_object_add(payload, "request_id", json_object_new_int64((int64_t)app_state.rpc_id));
+    json_object_object_add(request, "params", payload);
     const char* encoded = json_object_to_json_string_ext(request, JSON_C_TO_STRING_PLAIN);
     bool sent = write_all(fd, encoded, strlen(encoded)) && write_all(fd, "\n", 1);
     json_object_put(request);
@@ -348,9 +361,9 @@ static void apply_surface_input_region(void) {
     cairo_rectangle_int_t rectangle = app_state.expanded
         ? (cairo_rectangle_int_t){0, 0, PANEL_WIDTH, PANEL_HEIGHT}
         : (cairo_rectangle_int_t){
-              PANEL_WIDTH - COLLAPSED_SIZE,
+              PANEL_WIDTH - CONTROL_WIDTH,
               PANEL_HEIGHT - COLLAPSED_SIZE,
-              COLLAPSED_SIZE,
+              CONTROL_WIDTH,
               COLLAPSED_SIZE};
     cairo_region_t* region = cairo_region_create_rectangle(&rectangle);
     gdk_surface_set_input_region(surface, region);
@@ -385,6 +398,10 @@ static void transition_running_changed(GObject* object, GParamSpec* specificatio
 
 static void set_expanded(bool expanded) {
     app_state.expanded = expanded;
+    if (app_state.control_button) {
+        gtk_widget_set_margin_bottom(app_state.control_button, (int)lround((expanded ? 60 : 4) * app_state.ui_scale));
+        gtk_widget_set_margin_end(app_state.control_button, expanded ? 8 : HEAD_DRAW_SIZE + 8);
+    }
     if (app_state.head_area) {
         set_accessible_label(
             app_state.head_area,
@@ -527,6 +544,23 @@ static void entry_activate(GtkWidget* entry, gpointer data) {
     send_message();
 }
 
+static gboolean poll_state(gpointer data);
+
+static void control_clicked(GtkButton* button, gpointer data) {
+    (void)data;
+    if (!app_state.control_known)
+        return;
+    gtk_widget_set_sensitive(GTK_WIDGET(button), false);
+    json_object* result = rpc_call(app_state.seat_paused ? "seat.resume" : "seat.pause", NULL);
+    if (result)
+        json_object_put(result);
+    else
+        gtk_label_set_text(GTK_LABEL(app_state.state_label), AS_TR("Connection temporarily unavailable"));
+    /* Read the resulting pause state. A hover or human grace period must
+     * never masquerade as an explicit stop in this toggle. */
+    poll_state(NULL);
+}
+
 static gboolean poll_state(gpointer data) {
     (void)data;
     if (app_state.demo)
@@ -537,6 +571,15 @@ static gboolean poll_state(gpointer data) {
         const char* summary = AS_TR("Waiting for Agent");
         const char* detail = "";
         bool human_active = false;
+        app_state.control_known = json_object_object_get_ex(status, "seat_paused", &value);
+        if (app_state.control_known) {
+            app_state.seat_paused = json_object_get_boolean(value);
+            gtk_button_set_label(GTK_BUTTON(app_state.control_button), app_state.seat_paused ? AS_TR("Continue") : AS_TR("Stop"));
+            gtk_widget_set_tooltip_text(app_state.control_button, app_state.seat_paused ? AS_TR("Allow Agent input") : AS_TR("Stop Agent input"));
+            if (app_state.seat_paused) gtk_widget_add_css_class(app_state.control_button, "stopped");
+            else gtk_widget_remove_css_class(app_state.control_button, "stopped");
+        }
+        gtk_widget_set_sensitive(app_state.control_button, app_state.control_known);
         if (json_object_object_get_ex(status, "activity_summary", &value))
             summary = json_object_get_string(value);
         if (json_object_object_get_ex(status, "activity_detail", &value))
@@ -547,8 +590,8 @@ static gboolean poll_state(gpointer data) {
             bool allowed = json_object_get_boolean(value);
             gtk_label_set_text(
                 GTK_LABEL(app_state.state_label),
-                human_active
-                    ? AS_TR("You're in control · AI stepped aside")
+                app_state.seat_paused ? AS_TR("AI is paused")
+                    : human_active ? AS_TR("You're in control · AI stepped aside")
                     : (allowed ? AS_TR("AI can operate") : AS_TR("AI is paused")));
         }
         gtk_label_set_text(
@@ -557,6 +600,8 @@ static gboolean poll_state(gpointer data) {
         gtk_label_set_text(GTK_LABEL(app_state.detail_label), detail ? detail : "");
         json_object_put(status);
     } else {
+        app_state.control_known = false;
+        gtk_widget_set_sensitive(app_state.control_button, false);
         gtk_label_set_text(GTK_LABEL(app_state.state_label), AS_TR("Waiting for AgentSeat"));
     }
 
@@ -733,11 +778,22 @@ static GtkWidget* build_collapsed_placeholder(void) {
     return placeholder;
 }
 
+static gboolean scale_css_pixels(const GMatchInfo* match, GString* result, gpointer data) {
+    (void)data;
+    gchar* number = g_match_info_fetch(match, 1);
+    g_string_append_printf(result, "%.2fpx", g_ascii_strtod(number, NULL) * app_state.ui_scale);
+    g_free(number);
+    return false;
+}
+
 static void load_css(void) {
     const char* css =
         "window.agentseat-hud, window.agentseat-hud.background, window.agentseat-hud.csd { padding: 0; margin: 0; border: 0; border-radius: 0; outline: 0; background-color: transparent; background-image: none; box-shadow: none; color: #f6f9fc; font-family: sans-serif; }"
         "window.agentseat-hud > contents, window.agentseat-hud.csd > contents { padding: 0; margin: 0; border: 0; border-radius: 0; outline: 0; background-color: transparent; background-image: none; box-shadow: none; }"
         "window.agentseat-hud > stack { padding: 0; margin: 0; background-color: transparent; background-image: none; box-shadow: none; }"
+        ".agent-control { min-width: 70px; min-height: 38px; padding: 0 10px; border-radius: 20px; border: 1px solid #a4acb3; background: #f8fafb; color: #20262b; font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.16); }"
+        ".agent-control:hover { background: #e8edf1; } .agent-control.stopped { color: #ffffff; background: #245b46; border-color: #245b46; } .agent-control.stopped:hover { background: #194b38; }"
+        ".agent-control:disabled { opacity: .6; }"
         ".acrylic-root, .floating-content { background: transparent; }"
         ".status-whisper { color: rgba(246,250,253,.74); font-size: 10px; font-weight: 560; }"
         ".activity-title { color: #ffffff; font-size: 17px; font-weight: 680; line-height: 1.18; }"
@@ -753,9 +809,15 @@ static void load_css(void) {
         ".send-button label { color: #15191d; }"
         ".send-button:hover { color: #080a0c; background: rgba(18,24,28,.06); } .send-button:active { background: rgba(18,24,28,.12); }";
     GtkCssProvider* provider = gtk_css_provider_new();
-    gtk_css_provider_load_from_string(provider, css);
+    GRegex* pixels = g_regex_new("([0-9]+(?:\\.[0-9]+)?)px", 0, 0, NULL);
+    gchar* scaled_css = g_regex_replace_eval(pixels, css, -1, 0, 0, scale_css_pixels, NULL, NULL);
+    gtk_css_provider_load_from_string(provider, scaled_css);
+    g_free(scaled_css);
+    g_regex_unref(pixels);
+    /* This transparent, embedded control has its own readable foreground and
+     * background pair. Scope all overrides to the HUD, even with a user theme. */
     gtk_style_context_add_provider_for_display(
-        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_USER + 1);
     g_object_unref(provider);
 }
 
@@ -820,6 +882,11 @@ static void activate(GtkApplication* application, gpointer data) {
     gtk_widget_set_halign(app_state.head_area, GTK_ALIGN_END);
     gtk_widget_set_valign(app_state.head_area, GTK_ALIGN_END);
     gtk_overlay_add_overlay(GTK_OVERLAY(hud_root), app_state.head_area);
+    app_state.control_button = make_button(AS_TR("Connecting"), "agent-control", G_CALLBACK(control_clicked), NULL);
+    gtk_widget_set_halign(app_state.control_button, GTK_ALIGN_END);
+    gtk_widget_set_valign(app_state.control_button, GTK_ALIGN_END);
+    gtk_widget_set_sensitive(app_state.control_button, false);
+    gtk_overlay_add_overlay(GTK_OVERLAY(hud_root), app_state.control_button);
     gtk_window_set_child(app_state.window, hud_root);
 
     GtkEventController* keys = gtk_event_controller_key_new();
@@ -835,6 +902,16 @@ static void activate(GtkApplication* application, gpointer data) {
 
 int main(int argc, char** argv) {
     agentseat_i18n_init();
+    const char* scale = getenv("AGENTSEAT_HUD_SCALE");
+    if (scale) {
+        char* end = NULL;
+        double value = strtod(scale, &end);
+        if (end && !*end && isfinite(value) && value >= 1 && value <= 4)
+            app_state.ui_scale = value;
+    }
+    const char* session_id = getenv("AGENTSEAT_SESSION_ID");
+    if (session_id)
+        snprintf(app_state.session_id, sizeof(app_state.session_id), "%s", session_id);
     const char* runtime = getenv("XDG_RUNTIME_DIR");
     if (!runtime)
         runtime = "/tmp";

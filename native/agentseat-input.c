@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -17,6 +18,8 @@
 
 #include "agentseat-i18n.h"
 #include "agentseat-input.h"
+#include "agentseat-capture.h"
+#include "agentseat-control-v1-client-protocol.h"
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
 #include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
 
@@ -35,7 +38,20 @@ struct saved_mods {
 
 struct input_state {
     struct wl_display* display;
+    struct as_capture* capture;
     struct wl_registry* registry;
+    struct agentseat_control_v1* control;
+    uint32_t control_epoch;
+    uint32_t window_action_token, window_action_status;
+    uint32_t clipboard_token, clipboard_status, clipboard_transfers, clipboard_bytes;
+    struct wl_callback* authorization;
+    uint32_t authorization_requested, authorization_token, authorization_epoch;
+    bool authorization_allowed;
+    struct agentseat_scene scene, pending_scene;
+    uint32_t submit_epoch, submit_geometry;
+    uint32_t human_until_ms;
+    bool gate_allowed;
+    bool human_held;
     struct zwp_virtual_keyboard_manager_v1* keyboard_manager;
     struct zwlr_virtual_pointer_manager_v1* pointer_manager;
     struct wl_output* output;
@@ -65,21 +81,19 @@ struct input_state {
     char seat_name[256];
 };
 
+static void acquire_gate(struct input_state *self) {
+    if (self->submit_geometry)
+        agentseat_control_v1_acquire_geometry(self->control, self->submit_epoch, self->submit_geometry);
+    else
+        agentseat_control_v1_acquire(self->control, self->submit_epoch);
+}
+
 static uint32_t monotonic_ms(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
         return 0;
     uint64_t ms = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
     return (uint32_t)(ms & UINT32_MAX);
-}
-
-static void sleep_ms(unsigned ms) {
-    struct timespec req = {
-        .tv_sec = (time_t)(ms / 1000U),
-        .tv_nsec = (long)(ms % 1000U) * 1000000L,
-    };
-    while (nanosleep(&req, &req) != 0 && errno == EINTR) {
-    }
 }
 
 static bool utf8_next(const unsigned char* bytes, size_t length, size_t* offset, uint32_t* codepoint) {
@@ -113,7 +127,8 @@ static bool utf8_next(const unsigned char* bytes, size_t length, size_t* offset,
             return false;
         value = (value << 6) | (next & 0x3f);
     }
-    if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff))
+    if ((needed == 1 && value < 0x80) || (needed == 2 && value < 0x800) ||
+        (needed == 3 && value < 0x10000) || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff))
         return false;
     *codepoint = value;
     return true;
@@ -328,6 +343,73 @@ static void bind_target_seat(struct input_state* self) {
     self->seat = wl_registry_bind(self->registry, self->target_global, &wl_seat_interface, version);
 }
 
+static void control_state(
+    void* data, struct agentseat_control_v1* control,
+    uint32_t epoch, uint32_t allowed, uint32_t quiet_ms, uint32_t human_held) {
+    struct input_state* self = data;
+    (void)control;
+    self->control_epoch = epoch;
+    self->gate_allowed = allowed != 0;
+    self->human_until_ms = monotonic_ms() + quiet_ms;
+    self->human_held = human_held != 0;
+}
+
+static void scene_begin(void* data, struct agentseat_control_v1* control, uint32_t version) {
+    struct input_state* self = data;
+    (void)control;
+    self->pending_scene = (struct agentseat_scene){.version = version};
+}
+static void window_info(void* data, struct agentseat_control_v1* control, uint32_t id,
+    uint32_t parent_id, uint32_t pid, uint32_t flags, int32_t x, int32_t y,
+    int32_t width, int32_t height, const char* title, const char* app_id) {
+    struct input_state* self = data;
+    (void)control;
+    if (self->pending_scene.count >= AGENTSEAT_MAX_WINDOWS) {
+        self->pending_scene.truncated = true;
+        return;
+    }
+    struct agentseat_window* window = &self->pending_scene.windows[self->pending_scene.count++];
+    *window = (struct agentseat_window){.id = id, .parent_id = parent_id, .pid = pid,
+        .flags = flags, .x = x, .y = y, .width = width, .height = height};
+    snprintf(window->title, sizeof(window->title), "%s", title);
+    snprintf(window->app_id, sizeof(window->app_id), "%s", app_id);
+}
+static void scene_done(void* data, struct agentseat_control_v1* control, uint32_t version,
+    uint32_t focused_id, int32_t width, int32_t height, int32_t pixel_width,
+    int32_t pixel_height, uint32_t scale_120, uint32_t truncated) {
+    struct input_state* self = data;
+    (void)control;
+    self->pending_scene.version = version;
+    self->pending_scene.focused_id = focused_id;
+    self->pending_scene.width = width;
+    self->pending_scene.height = height;
+    self->pending_scene.pixel_width = pixel_width;
+    self->pending_scene.pixel_height = pixel_height;
+    self->pending_scene.scale_120 = scale_120;
+    self->pending_scene.truncated |= truncated != 0;
+    self->scene = self->pending_scene;
+}
+static void window_action_done(void* data, struct agentseat_control_v1* control, uint32_t token, uint32_t status) {
+    struct input_state* self = data;
+    (void)control;
+    self->window_action_token = token;
+    self->window_action_status = status;
+}
+static void clipboard_offered(void* data, struct agentseat_control_v1* control, uint32_t token, uint32_t status) {
+    struct input_state* self = data; (void)control;
+    self->clipboard_token = token; self->clipboard_status = status;
+}
+static void clipboard_transfer(void* data, struct agentseat_control_v1* control, uint32_t token, uint32_t bytes) {
+    struct input_state* self = data; (void)control;
+    if (self->clipboard_token != token) return;
+    self->clipboard_transfers++; self->clipboard_bytes += bytes;
+}
+static const struct agentseat_control_v1_listener control_listener = {
+    .state = control_state, .scene_begin = scene_begin, .window_info = window_info,
+    .scene_done = scene_done, .window_action_done = window_action_done,
+    .clipboard_offered = clipboard_offered, .clipboard_transfer = clipboard_transfer,
+};
+
 static void registry_global(
     void* data,
     struct wl_registry* registry,
@@ -335,7 +417,10 @@ static void registry_global(
     const char* interface,
     uint32_t version) {
     struct input_state* self = data;
-    if (strcmp(interface, zwp_virtual_keyboard_manager_v1_interface.name) == 0 && !self->keyboard_manager) {
+    if (strcmp(interface, agentseat_control_v1_interface.name) == 0 && version >= 2 && !self->control) {
+        self->control = wl_registry_bind(registry, id, &agentseat_control_v1_interface, version > 3 ? 3 : version);
+        agentseat_control_v1_add_listener(self->control, &control_listener, self);
+    } else if (strcmp(interface, zwp_virtual_keyboard_manager_v1_interface.name) == 0 && !self->keyboard_manager) {
         self->keyboard_manager = wl_registry_bind(registry, id, &zwp_virtual_keyboard_manager_v1_interface, 1);
     } else if (strcmp(interface, zwlr_virtual_pointer_manager_v1_interface.name) == 0 && !self->pointer_manager) {
         uint32_t bind_version = version > 2 ? 2 : version;
@@ -404,6 +489,8 @@ static void release_all(struct input_state* self) {
 }
 
 static void destroy_seat(struct input_state* self) {
+    if (self->control && self->created)
+        agentseat_control_v1_revoke(self->control);
     release_all(self);
     if (self->pointer)
         zwlr_virtual_pointer_v1_destroy(self->pointer);
@@ -457,6 +544,8 @@ static bool create_seat(
         return false;
     }
 
+    self->submit_epoch = self->control_epoch;
+    acquire_gate(self);
     self->keyboard = zwp_virtual_keyboard_manager_v1_create_virtual_keyboard(self->keyboard_manager, self->seat);
     self->pointer = self->output && self->pointer_manager_version >= 2
         ? zwlr_virtual_pointer_manager_v1_create_virtual_pointer_with_output(self->pointer_manager, self->seat, self->output)
@@ -506,6 +595,7 @@ static bool input_state_init(struct input_state* self, char* error, size_t error
         snprintf(error, error_size, "%s", AS_TR("Cannot connect to WAYLAND_DISPLAY"));
         return false;
     }
+    self->capture = as_capture_create(self->display);
     self->registry = wl_display_get_registry(self->display);
     if (!self->registry) {
         snprintf(error, error_size, "%s", AS_TR("wl_display_get_registry failed"));
@@ -516,11 +606,19 @@ static bool input_state_init(struct input_state* self, char* error, size_t error
         snprintf(error, error_size, "%s", AS_TR("Wayland registry roundtrip failed"));
         return false;
     }
+    if (!self->control || !self->control_epoch) {
+        snprintf(error, error_size, "Private compositor input gate is unavailable; use a matching AgentSeat build");
+        return false;
+    }
     return true;
 }
 
 static void input_state_destroy(struct input_state* self) {
     destroy_seat(self);
+    if (self->authorization) wl_callback_destroy(self->authorization);
+    as_capture_destroy(self->capture);
+    if (self->control)
+        agentseat_control_v1_destroy(self->control);
     if (self->pointer_manager)
         zwlr_virtual_pointer_manager_v1_destroy(self->pointer_manager);
     if (self->keyboard_manager)
@@ -635,8 +733,23 @@ void agentseat_input_status(const struct agentseat_input* input, struct agentsea
     memset(status, 0, sizeof(*status));
     if (!self)
         return;
+    status->control_protocol_version = self->control ? agentseat_control_v1_get_version(self->control) : 0;
     status->created = self->created;
     status->paused = self->paused;
+    status->control_epoch = self->control_epoch;
+    status->clipboard_token = self->clipboard_token;
+    status->clipboard_status = self->clipboard_status;
+    status->clipboard_transfers = self->clipboard_transfers;
+    status->clipboard_bytes = self->clipboard_bytes;
+    status->window_action_token = self->window_action_token;
+    status->window_action_status = self->window_action_status;
+    status->authorization_token = self->authorization_token;
+    status->authorization_epoch = self->authorization_epoch;
+    status->authorization_allowed = self->authorization_allowed;
+    status->gate_allowed = self->gate_allowed;
+    status->human_held = self->human_held;
+    int32_t remaining = (int32_t)(self->human_until_ms - monotonic_ms());
+    status->human_quiet_ms = remaining > 0 ? (unsigned)remaining : 0;
     status->seat_global = self->target_global;
     status->pointer_x = self->pointer_x;
     status->pointer_y = self->pointer_y;
@@ -666,6 +779,7 @@ bool agentseat_input_move_absolute(
             AS_TR("Pointer coordinates must be normalized from 0 to 1"));
         return false;
     }
+    acquire_gate(self);
     self->pointer_x = x;
     self->pointer_y = y;
     zwlr_virtual_pointer_v1_motion_absolute(
@@ -692,6 +806,7 @@ bool agentseat_input_button(
         snprintf(error, error_size, "%s", AS_TR("Button code is outside the supported range"));
         return false;
     }
+    acquire_gate(self);
     if (self->pressed_buttons[button] != pressed) {
         zwlr_virtual_pointer_v1_button(
             self->pointer,
@@ -713,6 +828,7 @@ bool agentseat_input_scroll(
     struct input_state* self = input_state(input);
     if (!require_input_active(self, error, error_size))
         return false;
+    acquire_gate(self);
     const uint32_t axis = horizontal ? WL_POINTER_AXIS_HORIZONTAL_SCROLL : WL_POINTER_AXIS_VERTICAL_SCROLL;
     int discrete = value120 / 120;
     if (discrete == 0 && value120 != 0)
@@ -741,6 +857,7 @@ bool agentseat_input_key(
         snprintf(error, error_size, "%s", AS_TR("Keycode is outside the supported range"));
         return false;
     }
+    acquire_gate(self);
     if (self->pressed_keys[keycode] != pressed) {
         send_raw_key(self, keycode, pressed);
         self->pressed_keys[keycode] = pressed;
@@ -748,56 +865,161 @@ bool agentseat_input_key(
     return flush_input(self, error, error_size);
 }
 
-bool agentseat_input_type(
-    struct agentseat_input* input,
-    const char* text,
-    int interval_ms,
-    size_t* typed,
-    bool* unsupported,
-    char* error,
-    size_t error_size) {
+bool agentseat_input_prepare_text(
+    struct agentseat_input* input, const char* text,
+    uint32_t** output, size_t* count, bool* unsupported,
+    char* error, size_t error_size) {
     struct input_state* self = input_state(input);
-    *typed = 0;
+    *output = NULL;
+    *count = 0;
     *unsupported = false;
     if (!require_input_active(self, error, error_size))
         return false;
-    const unsigned char* bytes = (const unsigned char*)text;
-    const size_t byte_length = strlen(text);
-    uint32_t* codepoints = calloc(byte_length + 1, sizeof(*codepoints));
+    const size_t length = strlen(text);
+    uint32_t* codepoints = calloc(length + 1, sizeof(*codepoints));
     if (!codepoints) {
         snprintf(error, error_size, "%s", AS_TR("Cannot allocate text input buffer"));
         return false;
     }
     size_t offset = 0;
-    size_t count = 0;
-    while (offset < byte_length) {
+    /* Cache ASCII support within this request; long repeated text must not
+     * rescan the complete XKB map for each occurrence during validation. */
+    unsigned char supported_ascii[128] = {0};
+    while (offset < length) {
         uint32_t codepoint = 0;
-        if (!utf8_next(bytes, byte_length, &offset, &codepoint) || !supported_codepoint(self, codepoint)) {
+        bool valid = utf8_next((const unsigned char*)text, length, &offset, &codepoint);
+        bool supported = valid && codepoint < 128 && supported_ascii[codepoint] != 0;
+        if (valid && !supported)
+            supported = supported_codepoint(self, codepoint);
+        if (!valid || !supported) {
             *unsupported = true;
-            snprintf(
-                error,
-                error_size,
-                "%s",
-                AS_TR("Text contains invalid UTF-8 or a character unavailable in the configured XKB keymap"));
+            snprintf(error, error_size, "%s", AS_TR("Text contains invalid UTF-8 or a character unavailable in the configured XKB keymap"));
             free(codepoints);
             return false;
         }
-        codepoints[count++] = codepoint;
+        if (codepoint < 128)
+            supported_ascii[codepoint] = 1;
+        codepoints[(*count)++] = codepoint;
     }
-    for (size_t i = 0; i < count; ++i) {
-        if (!type_codepoint(self, self->keyboard, codepoints[i])) {
-            snprintf(error, error_size, "%s", AS_TR("A key became unavailable while typing"));
-            free(codepoints);
-            return false;
-        }
-        if (interval_ms > 0 && i + 1 < count)
-            sleep_ms((unsigned)interval_ms);
-    }
-    free(codepoints);
-    if (wl_display_flush(self->display) < 0) {
-        snprintf(error, error_size, "%s", AS_TR("Cannot flush AgentSeat keyboard events"));
+    *output = codepoints;
+    return true;
+}
+
+bool agentseat_input_type_codepoint(
+    struct agentseat_input* input, uint32_t codepoint,
+    char* error, size_t error_size) {
+    struct input_state* self = input_state(input);
+    if (!require_input_active(self, error, error_size))
+        return false;
+    acquire_gate(self);
+    if (!type_codepoint(self, self->keyboard, codepoint)) {
+        snprintf(error, error_size, "%s", AS_TR("A key became unavailable while typing"));
         return false;
     }
-    *typed = count;
+    return flush_input(self, error, error_size);
+}
+
+void agentseat_input_release_all(struct agentseat_input* input) {
+    struct input_state* self = input_state(input);
+    if (self)
+        release_all(self);
+}
+
+void agentseat_input_arm(struct agentseat_input* input, uint32_t epoch) {
+    struct input_state* self = input_state(input);
+    self->submit_epoch = epoch;
+}
+
+void agentseat_input_revoke(struct agentseat_input* input) {
+    struct input_state* self = input_state(input);
+    if (self && self->control) {
+        agentseat_control_v1_revoke(self->control);
+        release_all(self);
+    }
+}
+
+void agentseat_input_hold_timeout(struct agentseat_input* input, unsigned milliseconds) {
+    struct input_state* self = input_state(input);
+    if (self && self->control)
+        agentseat_control_v1_hold_timeout(self->control, milliseconds);
+}
+
+const struct agentseat_scene* agentseat_input_scene(const struct agentseat_input* input) {
+    const struct input_state* self = input_state_const(input);
+    return self ? &self->scene : NULL;
+}
+void agentseat_input_window_action(struct agentseat_input* input, uint32_t token,
+    uint32_t window_id, uint32_t action, int first, int second) {
+    struct input_state* self = input_state(input);
+    acquire_gate(self);
+    agentseat_control_v1_window_action(self->control, self->submit_epoch, token, window_id, action, first, second);
+    wl_display_flush(self->display);
+}
+
+struct as_capture* agentseat_input_capture(struct agentseat_input* input) {
+    return input_state(input)->capture;
+}
+json_object* agentseat_input_capture_start(struct agentseat_input* input, const char* socket_path) {
+    struct input_state* self = input_state(input);
+    return as_capture_start(self->capture, self->control, socket_path, self->scene.version);
+}
+
+void agentseat_input_geometry(struct agentseat_input* input, uint32_t version) {
+    input_state(input)->submit_geometry = version;
+}
+
+static void authority_done(void* data, struct wl_callback* callback, uint32_t serial) {
+    (void)serial;
+    struct input_state* self = data;
+    self->authorization_token = self->authorization_requested;
+    self->authorization_epoch = self->control_epoch;
+    self->authorization_allowed = self->gate_allowed;
+    self->authorization = NULL;
+    wl_callback_destroy(callback);
+}
+static const struct wl_callback_listener authority_listener = {.done = authority_done};
+void agentseat_input_check_authority(struct agentseat_input* input, uint32_t token) {
+    struct input_state* self = input_state(input);
+    if (self->authorization) wl_callback_destroy(self->authorization);
+    self->authorization_requested = token;
+    acquire_gate(self);
+    self->authorization = wl_display_sync(self->display);
+    wl_callback_add_listener(self->authorization, &authority_listener, self);
+    wl_display_flush(self->display);
+}
+
+bool agentseat_input_paste_offer(struct agentseat_input* input, uint32_t token,
+    const char* text, char* error, size_t error_size) {
+    struct input_state* self = input_state(input);
+    if (!require_input_active(self, error, error_size)) return false;
+    for (size_t i = 0; i < MAX_TRACKED_KEYS; i++) {
+        if (self->pressed_keys[i]) {
+            snprintf(error, error_size, "Release held virtual keys before paste"); return false;
+        }
+    }
+    if (agentseat_control_v1_get_version(self->control) < 3) {
+        snprintf(error, error_size, "Private clipboard requires microhost control version 3"); return false;
+    }
+    size_t size = strlen(text), offset = 0;
+    uint32_t codepoint;
+    while (offset < size) {
+        if (!utf8_next((const unsigned char*)text, size, &offset, &codepoint)) {
+            snprintf(error, error_size, "Clipboard text is not valid UTF-8"); return false;
+        }
+    }
+    int fd = memfd_create("agentseat-clipboard", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    if (fd < 0 || write(fd, text, size) != (ssize_t)size ||
+        fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL) < 0) {
+        if (fd >= 0) close(fd);
+        snprintf(error, error_size, "Cannot prepare sealed clipboard payload"); return false;
+    }
+    self->clipboard_token = 0; self->clipboard_status = 0;
+    self->clipboard_transfers = self->clipboard_bytes = 0;
+    acquire_gate(self);
+    agentseat_control_v1_clipboard_offer(self->control, self->submit_epoch, token, fd, size);
+    close(fd);
+    /* Once queued, a flush failure is an unknown outcome; do not report a
+     * pre-submission failure that could encourage a replay. Dispatch owns it. */
+    wl_display_flush(self->display);
     return true;
 }

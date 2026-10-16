@@ -21,6 +21,8 @@ else
 fi
 meson compile -C "$microhost_build"
 
+install -d "$project_root/lib"
+install -m 0755 "$native_build/lib/libagentseat-atk-dispatch.so" "$project_root/lib/libagentseat-atk-dispatch.so"
 install -m 0755 "$native_build/bin/agentseatd" "$project_root/bin/agentseatd"
 install -m 0755 "$native_build/bin/agentseat-eye" "$project_root/bin/agentseat-eye"
 install -m 0755 "$microhost_build/agentseat-microhost" "$project_root/bin/agentseat-microhost"

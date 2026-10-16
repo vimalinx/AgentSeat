@@ -3,6 +3,7 @@
 /bin/agentseatd
 /bin/agentseat-eye
 /bin/agentseat-microhost
+/lib/*.so
 /runtime/
 /evidence/
 /.pytest_cache/
