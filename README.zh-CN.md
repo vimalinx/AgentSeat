@@ -156,7 +156,8 @@ agentseat stop
 协作脑袋不算变化。`doctor` 只诊断依赖、范围和坐标映射，不做任何修改；`capabilities`
 区分已实现、应用暴露、本会话授权和当前可用的能力。没有无障碍接口的应用（Tk、游戏、
 画布类工具包）在语义读取时返回 `SEMANTICS_UNAVAILABLE`，请改用视觉操作；它们不接受
-粘贴时用 `type --keys` 发送按键。Chromium 和 Electron 应用需要在自己的参数里加
+粘贴时用 `type --keys` 发送按键（这些按键仍会经过当前输入法，见
+[PROTOCOL.md](docs/PROTOCOL.md)）。Chromium 和 Electron 应用需要在自己的参数里加
 `--force-renderer-accessibility` 才会暴露网页内容。
 
 `run` 保留原来的单一默认会话，适合 Agent 直接操作。需要让每个桌面应用拥有

@@ -138,6 +138,11 @@ chunked private paste so the engine cannot rewrite the text. Canvases, games and
 terminals that only handle key events ignore paste; `agentseat type --keys`
 sends `keyboard.type` key events instead and fails with `UNSUPPORTED_CHARACTER`
 for characters the Agent keymap cannot produce, without falling back to paste.
+The keys still pass through the session's input method: in a GTK field with
+Fcitx5 pinyin active, `--keys world` became an uncommitted pinyin preedit. Use
+`--keys` for applications that do not use the input method (Tk, raw X11,
+games), or launch with `--ime simple` when key events must reach a toolkit
+field verbatim.
 
 The micro-host bounds each source at 64 read requests and 16 simultaneous
 nonblocking writers. Closed/broken recipients cannot block or terminate its
