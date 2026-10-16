@@ -30,7 +30,7 @@ import tomllib
 
 EXPECTED_A11Y_SCOPE = None
 ROOT = Path(os.environ.get("AGENTSEAT_ROOT", Path(__file__).resolve().parents[1])).resolve()
-AGENTSEAT_VERSION = "0.6.0"
+AGENTSEAT_VERSION = "0.6.1"
 USER_HOME = Path.home()
 XDG_STATE_BASE = Path(os.environ.get("XDG_STATE_HOME", USER_HOME / ".local/state")).expanduser().resolve()
 CONFIG_HOME = Path(

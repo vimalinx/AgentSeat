@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.1 — 2026-10-16
+
+### Added
+
+- `type --keys` sends key events for canvases, games and terminals that ignore
+  the private paste used in input-method sessions.
+- Application nodes report their `toolkit`; snapshots count AT-SPI null
+  children in `null_children`.
+
+### Fixed
+
+- Applications without accessibility (Tk, raw X11, canvas toolkits) returned an
+  empty snapshot, and an `absent` wait succeeded. Snapshot, query and selector
+  waits now fail with `SEMANTICS_UNAVAILABLE`.
+- `capabilities` named the wrong reason for unavailable semantic entries.
+- Chromium/Electron without renderer accessibility produced a truncated
+  snapshot with a `GetRole` error; `doctor` now explains the missing
+  `--force-renderer-accessibility`.
+
 ## 0.6.0 — 2026-10-16
 
 Sessions started by an earlier release keep running on their own binaries;

@@ -863,7 +863,7 @@ def test_version_is_available_before_daemon_start(controller: ModuleType, tmp_pa
     controller.CONTROL_SOCKET = tmp_path / "missing.sock"
     assert controller.version() == {
         "controller": "agentseat",
-        "version": "0.6.0",
+        "version": "0.6.1",
         "protocol_version": 2,
         "daemon": None,
     }
