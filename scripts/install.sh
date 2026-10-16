@@ -4,6 +4,7 @@ umask 077
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(dirname "$script_dir")
+build_root=${AGENTSEAT_BUILD_DIR:-$project_root/build}
 data_home=${XDG_DATA_HOME:-$HOME/.local/share}
 bin_home=${XDG_BIN_HOME:-$HOME/.local/bin}
 install_root="$data_home/agentseat"
@@ -56,7 +57,7 @@ else
             done
             sha256sum "$project_root/lib/libagentseat-atk-dispatch.so" "$project_root/lib/agentseat_compat_onlyoffice.py" "$project_root/python/agentseat_client.py" "$project_root/LICENSE" "$project_root/THIRD_PARTY_NOTICES.md" "$project_root/config/config.toml.example"
             for language in zh_CN zh_TW; do
-                sha256sum "$project_root/build/locale/$language/LC_MESSAGES/agentseat.mo"
+                sha256sum "$build_root/locale/$language/LC_MESSAGES/agentseat.mo"
             done
         } | sha256sum | cut -c1-12
     )
@@ -76,7 +77,7 @@ else
         install -m 0644 "$project_root/config/config.toml.example" "$stage/share/examples/config.toml"
         for language in zh_CN zh_TW; do
             install -d "$stage/share/locale/$language/LC_MESSAGES"
-            install -m 0644 "$project_root/build/locale/$language/LC_MESSAGES/agentseat.mo" "$stage/share/locale/$language/LC_MESSAGES/agentseat.mo"
+            install -m 0644 "$build_root/locale/$language/LC_MESSAGES/agentseat.mo" "$stage/share/locale/$language/LC_MESSAGES/agentseat.mo"
         done
         (cd "$stage" && sha256sum bin/* lib/*.so lib/*.py share/python/*.py share/LICENSE share/THIRD_PARTY_NOTICES.md share/examples/config.toml share/locale/*/LC_MESSAGES/agentseat.mo) > "$stage/manifest.sha256"
         mv "$stage" "$release"
