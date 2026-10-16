@@ -1,0 +1,971 @@
+#!/usr/bin/env python3
+"""Scoped AT-SPI reads, event waits and side-effect-free action preparation."""
+from __future__ import annotations
+import argparse
+import collections
+import json
+import math
+import xml.etree.ElementTree as ET
+import os
+import selectors
+import signal
+import shutil
+import socket
+import struct
+import subprocess
+import time
+import uuid
+from pathlib import Path
+
+import gi
+gi.require_version("Gio", "2.0")
+gi.require_version("Atspi", "2.0")
+from gi.repository import Gio, GLib, Atspi
+
+STATE_NAMES = {index: state.value_nick for index, state in Atspi.StateType.__enum_values__.items()}
+API = "org.a11y.atspi."
+MAX_EVENTS = 256
+MAX_WAITS = 16
+WRITE_KINDS = {"a11y.perform", "a11y.set_text", "a11y.set_value", "a11y.focus", "a11y.select", "a11y.scroll_to"}
+
+
+
+def process(pid):
+    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    return int(fields[1]), fields[19]
+
+
+def descendant(pid, root):
+    for _ in range(32):
+        if pid == root:
+            return True
+        if pid <= 1:
+            return False
+        pid = process(pid)[0]
+    return False
+
+
+def connect(address):
+    return Gio.DBusConnection.new_for_address_sync(address,
+        Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+
+
+def prepare_ime(runtime, env):
+    """Keep the user's input scheme; all learning/writes stay in a private copy.
+
+    Never run two Rime processes against the same LevelDB directory. Copy the
+    user's config and data once per launch, including compiled schemas and Lua
+    customizations, rather than silently substituting stock Pinyin.
+    """
+    home = Path.home()
+    config_source = Path(env.get("XDG_CONFIG_HOME", home / ".config")) / "fcitx5"
+    data_source = Path(env.get("XDG_DATA_HOME", home / ".local/share")) / "fcitx5"
+    config_root, data_root = runtime / "ime-config", runtime / "ime-data"
+    for source, target in ((config_source, config_root / "fcitx5"), (data_source, data_root / "fcitx5")):
+        if target.exists():
+            shutil.rmtree(target)
+        if source.is_dir():
+            shutil.copytree(source, target, ignore=shutil.ignore_patterns("LOCK", "*.lock", "*.backup*", "sync"))
+        else:
+            target.mkdir(parents=True, mode=0o700)
+    profile = config_root / "fcitx5/profile"
+    if not profile.exists():
+        profile.write_text("[Groups/0]\nName=Private\nDefault Layout=us\nDefaultIM=pinyin\n"
+            "\n[Groups/0/Items/0]\nName=keyboard-us\nLayout=\n"
+            "\n[Groups/0/Items/1]\nName=pinyin\nLayout=\n\n[GroupOrder]\n0=Private\n")
+    return {**env, "XDG_CONFIG_HOME": str(config_root), "XDG_DATA_HOME": str(data_root),
+            "XDG_CACHE_HOME": str(runtime / "ime-cache"),
+            "FCITX_ADDON_DIRS": "/usr/lib/fcitx5", "FCITX_ADDON_CONFIG_DIRS": "/usr/share/fcitx5/addon"}
+
+
+class Bridge:
+    def __init__(self, runtime, enable_a11y, ime):
+        self.runtime = runtime
+        self.enable_a11y = enable_a11y
+        self.ime = ime
+        self.ime_child = None
+        self.scope_id = uuid.uuid4().hex
+        self.children = []
+        self.session = self.bus = None
+        self.app = None
+        self.deadline = time.monotonic() + 10
+        self.snapshots = collections.OrderedDict()
+        self.references = collections.OrderedDict()
+        self.owner_generations = {}
+        self.parent_links = collections.OrderedDict()
+        self.windows_cache = None
+        self.events = collections.deque(maxlen=MAX_EVENTS)
+        self.event_seq = 0
+        self.peers = {}
+        self.generations = {}
+        self.waits = collections.OrderedDict()
+        self.signal_ids = []
+        self.registered_peers = set()
+        self.registry_signature = None
+
+    def call(self, bus, owner, path, interface, method, signature=None, values=None):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("READ_BUDGET_EXCEEDED")
+        args = GLib.Variant(signature, values) if signature else None
+        return bus.call_sync(owner, path, interface, method, args, None, Gio.DBusCallFlags.NONE,
+                             max(1, min(250, int(remaining * 1000))), None).unpack()
+
+    def pid(self, bus, owner="org.freedesktop.DBus"):
+        return self.call(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+            "org.freedesktop.DBus", "GetConnectionUnixProcessID", "(s)", (owner,))[0]
+
+    def spawn(self, argv, env=None):
+        child = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL)
+        self.children.append(child)
+        return child
+
+    def wait_owner(self, bus, name, expected):
+        while time.monotonic() < self.deadline:
+            try:
+                pid = self.pid(bus, name)
+            except GLib.Error:
+                time.sleep(.02)
+                continue
+            if pid != expected:
+                raise RuntimeError("PRIVATE_BUS_OWNER_MISMATCH")
+            return
+        raise RuntimeError("PRIVATE_BUS_START_TIMEOUT")
+
+    def start(self, argv):
+        self.session = connect(os.environ["DBUS_SESSION_BUS_ADDRESS"])
+        if process(self.pid(self.session))[0] != os.getppid():
+            raise RuntimeError("SESSION_BUS_NOT_OWNED")
+        env = dict(os.environ)
+        self.registry = self.launcher = None
+        if self.enable_a11y:
+            launcher = self.spawn(["/usr/lib/at-spi-bus-launcher", "--launch-immediately"])
+            self.wait_owner(self.session, "org.a11y.Bus", launcher.pid)
+            address = self.call(self.session, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus", "GetAddress")[0]
+            self.bus = connect(address)
+            if not descendant(self.pid(self.bus), launcher.pid):
+                raise RuntimeError("ACCESSIBILITY_BUS_NOT_OWNED")
+            env.update({"AT_SPI_BUS_ADDRESS": address, "GTK_A11Y": "atspi", "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
+                        "ACCESSIBILITY_ENABLED": "1"})
+            env.pop("NO_AT_BRIDGE", None)
+            registry = self.spawn(["/usr/lib/at-spi2-registryd"], env)
+            self.wait_owner(self.bus, "org.a11y.atspi.Registry", registry.pid)
+            self.registry, self.launcher = registry, launcher
+            self.bus_address = address
+            self.bus_pid = self.pid(self.bus)
+            self.bus_start = process(self.bus_pid)[1]
+            self.bus_peer_pid = self.bus.get_stream().get_socket().get_credentials().get_unix_pid()
+            self.bus_peer_start = process(self.bus_peer_pid)[1]
+            if not descendant(self.bus_peer_pid, launcher.pid):
+                raise RuntimeError("ACCESSIBILITY_SOCKET_NOT_OWNED")
+            introspection = self.call(self.bus, "org.a11y.atspi.Registry", "/org/a11y/atspi/registry",
+                "org.freedesktop.DBus.Introspectable", "Introspect")[0]
+            for method in ET.fromstring(introspection).findall("./interface[@name='org.a11y.atspi.Registry']/method"):
+                if method.get("name") == "RegisterEvent":
+                    self.registry_signature = "(" + "".join(a.get("type") for a in method.findall("arg") if a.get("direction", "in") == "in") + ")"
+            for interface in ("Object", "Window"):
+                self.signal_ids.append(self.bus.signal_subscribe(None, API + "Event." + interface,
+                    None, None, None, Gio.DBusSignalFlags.NONE, self.on_event, None))
+        if self.ime == "inherit":
+            # AT-SPI stays on its owned bus; the app retains its original
+            # session bus for IBus, Fcitx and other user-selected services.
+            address = env.pop("AGENTSEAT_DESKTOP_BUS", None)
+            if address:
+                env["DBUS_SESSION_BUS_ADDRESS"] = address
+        if self.ime == "desktop":
+            if not env.get("DISPLAY") or not env.get("AGENTSEAT_DESKTOP_BUS"):
+                raise RuntimeError("DESKTOP_IME_DISPLAY_OR_BUS_UNAVAILABLE")
+            desktop = connect(env["AGENTSEAT_DESKTOP_BUS"])
+            # Connect the already-running desktop Fcitx to only this private
+            # display. This is its documented secondary-display interface; no
+            # desktop key, focus, active input method, or configuration change.
+            owner = self.call(desktop, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                "org.freedesktop.DBus", "GetNameOwner", "(s)", ("org.fcitx.Fcitx5",))[0]
+            desktop.call_sync(owner, "/controller", "org.fcitx.Fcitx.Controller1",
+                "OpenX11Connection", GLib.Variant("(s)", (env["DISPLAY"],)), None,
+                Gio.DBusCallFlags.NO_AUTO_START, 3000, None)
+            self.desktop_ime_pid = self.pid(desktop, owner)
+            env["DBUS_SESSION_BUS_ADDRESS"] = env.pop("AGENTSEAT_DESKTOP_BUS")
+            # Preserve each toolkit choice, including native Wayland, IBus,
+            # Compose, or a Qt module fallback list alongside Fcitx.
+        if self.ime == "fcitx5":
+            if not env.get("DISPLAY"):
+                raise RuntimeError("PRIVATE_XWAYLAND_REQUIRED_FOR_IME_CANDIDATES")
+            ime_env = prepare_ime(self.runtime, env)
+            # Keep all installed input engines and their dependencies, but keep
+            # candidate UI on the private display and disable desktop services.
+            ime_env.pop("WAYLAND_DISPLAY", None)
+            self.ime_child = self.spawn(["/usr/bin/fcitx5", "-D", "--disable",
+                "wayland,waylandim,clipboard,notifications,notificationitem,kimpanel"], ime_env)
+            self.wait_owner(self.session, "org.fcitx.Fcitx5", self.ime_child.pid)
+            env.update({"GTK_IM_MODULE": "fcitx", "QT_IM_MODULE": "fcitx", "XMODIFIERS": "@im=fcitx"})
+        if self.enable_a11y:
+            # Apply only to the application, after launching the scoped bus,
+            # registry and IME. ATK modal callbacks must run outside the
+            # non-reentrant libdbus dispatch lock; other toolkits are unchanged.
+            dispatch_library = Path(__file__).resolve().parents[1] / "lib/libagentseat-atk-dispatch.so"
+            if not dispatch_library.is_file() or any(c.isspace() or c == ":" for c in str(dispatch_library)):
+                raise RuntimeError("ATK_DISPATCH_LIBRARY_UNAVAILABLE")
+            env["LD_PRELOAD"] = str(dispatch_library) + (":" + env["LD_PRELOAD"] if env.get("LD_PRELOAD") else "")
+        self.app = self.spawn(argv, env)
+        self.app_start = process(self.app.pid)[1]
+        self.receipt = {"scope_id": self.scope_id, "bridge_pid": os.getpid(),
+            "bridge_start": process(os.getpid())[1], "app_pid": self.app.pid,
+            "app_start": self.app_start, "scope": "private-application-descendants",
+            "semantic_writes": "native-control-only" if self.enable_a11y else False,
+            "bridge_writes": False, "protocol_version": 3,
+            "a11y_enabled": self.enable_a11y, "atk_dispatch": "deferred-outside-dbus" if self.enable_a11y else "disabled", "ime": self.ime,
+            "ime_pid": self.ime_child.pid if self.ime_child else getattr(self, "desktop_ime_pid", None),
+            "ime_ownership": "desktop-service" if self.ime == "desktop" else "inherited" if self.ime == "inherit" else "private-child", "socket": str(self.runtime / "a11y.sock")}
+
+    def scoped_peer(self, owner):
+        if not owner.startswith(":"):
+            raise RuntimeError("UNVERIFIED_ACCESSIBLE_OWNER")
+        pid = self.pid(self.bus, owner)
+        identity = process(pid)[1]
+        if self.app.poll() is not None or process(self.app.pid)[1] != self.app_start or not descendant(pid, self.app.pid):
+            raise RuntimeError("ACCESSIBLE_OUTSIDE_APPLICATION_SCOPE")
+        if owner not in self.registered_peers and len(self.registered_peers) >= 256:
+            raise RuntimeError("PEER_BUDGET_EXCEEDED")
+        self.peers[owner] = (pid, identity)
+        if owner not in self.registered_peers:
+            if self.registry_signature == "(sass)":
+                args = ("object:", [], owner)
+            elif self.registry_signature == "(sas)":
+                args = ("object:", [])
+            else:
+                raise RuntimeError("EVENT_REGISTRATION_UNSUPPORTED")
+            self.call(self.bus, "org.a11y.atspi.Registry", "/org/a11y/atspi/registry", API + "Registry",
+                      "RegisterEvent", self.registry_signature, args)
+            self.registered_peers.add(owner)
+        return pid, identity
+
+    def on_event(self, _bus, sender, path, interface, member, params, _data):
+        # Only peers whose kernel PID and application ancestry were already
+        # checked may enter this queue. Never store text/value event payloads.
+        identity = self.peers.get(sender)
+        if not identity:
+            return
+        try:
+            if process(identity[0])[1] != identity[1] or not descendant(identity[0], self.app.pid):
+                self.peers.pop(sender, None)
+                return
+        except (OSError, ValueError):
+            return
+        detail = params.get_child_value(0).unpack() if params.n_children() else ""
+        allowed_details = set(STATE_NAMES.values()) | {"add", "remove", "insert", "delete", "insert:system", "delete:system",
+            "accessible-name", "accessible-description", "accessible-value", "accessible-parent", "accessible-role"}
+        safe_detail = detail if isinstance(detail, str) and detail in allowed_details else ""
+        self.event_seq += 1
+        self.events.append({"event_seq": self.event_seq, "scope_id": self.scope_id,
+            "type": interface.removeprefix(API + "Event.") + "." + member,
+            "detail": safe_detail, "source": (sender + path)[:1024], "pid": identity[0],
+            "monotonic_ns": time.monotonic_ns(), "payload_read": False})
+        removed = None
+        if member == "StateChanged" and detail == "defunct":
+            removed = (sender, path)
+        elif member == "ChildrenChanged" and detail == "remove" and params.n_children() > 3:
+            value = params.get_child_value(3)
+            if value.is_of_type(GLib.VariantType.new("v")):
+                value = value.get_variant()
+            if value.is_of_type(GLib.VariantType.new("(so)")):
+                removed = tuple(value.unpack())
+        if removed and len(removed[0]) <= 255 and len(removed[1]) <= 1024:
+            self.invalidate_subtree(removed)
+            if len(self.generations) > 4096:
+                self.snapshots.clear()
+                self.references.clear()
+                self.generations.clear()
+                self.owner_generations.clear()
+                self.parent_links.clear()
+
+    def invalidate_subtree(self, removed):
+        # Preserve unrelated refs only when their complete known ancestry
+        # proves they are outside the removed subtree. Missing/cyclic ancestry
+        # stays conservative; old references must reject recycled child paths.
+        affected = {removed}
+        for record in self.references.values():
+            key = (record[1], record[2])
+            if key[0] != removed[0]:
+                continue
+            ancestor, seen = key, set()
+            while ancestor is not None and ancestor != removed:
+                if ancestor in seen or ancestor not in self.parent_links:
+                    break
+                seen.add(ancestor)
+                ancestor = self.parent_links[ancestor]
+            if ancestor is not None:
+                affected.add(key)
+        for key in affected:
+            self.generations[key] = self.generations.get(key, 0) + 1
+            self.parent_links.pop(key, None)
+
+    def drain_events(self):
+        context = GLib.MainContext.default()
+        until = time.monotonic() + .01
+        for _ in range(64):
+            if time.monotonic() >= until or not context.pending():
+                break
+            context.iteration(False)
+
+    def properties(self, owner, path, interface):
+        # Read only properties this protocol needs. Some providers terminate
+        # while evaluating GetAll after accessibility event registration, even
+        # though these individual Get operations work. An error fallback is too
+        # late once the application has exited; never enumerate extra getters.
+        names = {API + "Accessible": ("Name", "Description", "Parent", "ChildCount"),
+                 API + "Value": ("MinimumValue", "MaximumValue", "MinimumIncrement", "CurrentValue")}[interface]
+        values = {}
+        for name in names:
+            try:
+                values[name] = self.call(self.bus, owner, path, "org.freedesktop.DBus.Properties", "Get", "(ss)", (interface, name))[0]
+            except GLib.Error as error:
+                if Gio.DBusError.get_remote_error(error) not in {"org.freedesktop.DBus.Error.UnknownProperty", "org.freedesktop.DBus.Error.UnknownMethod"}:
+                    raise
+        return values
+
+    def node(self, owner, path, depth, ref, details=False):
+        if len(path) > 1024:
+            raise RuntimeError("NODE_PATH_BUDGET_EXCEEDED")
+        pid, identity = self.scoped_peer(owner)
+        role_id = self.call(self.bus, owner, path, API + "Accessible", "GetRole")[0]
+        role = self.call(self.bus, owner, path, API + "Accessible", "GetRoleName")[0]
+        protected = role_id == int(Atspi.Role.PASSWORD_TEXT) or "password" in role.lower()
+        if protected:
+            props = {name: self.call(self.bus, owner, path, "org.freedesktop.DBus.Properties", "Get", "(ss)", (API + "Accessible", name))[0]
+                     for name in ("Parent", "ChildCount")}
+        else:
+            props = self.properties(owner, path, API + "Accessible")
+        interfaces = self.call(self.bus, owner, path, API + "Accessible", "GetInterfaces")[0]
+        bits = self.call(self.bus, owner, path, API + "Accessible", "GetState")[0]
+        states = [name for index, name in STATE_NAMES.items() if index // 32 < len(bits) and bits[index // 32] & (1 << (index % 32))]
+        if "defunct" in states:
+            raise RuntimeError("STALE_NODE_REF")
+        key = (owner, path)
+        parent = props.get("Parent")
+        self.parent_links[key] = None if role_id == int(Atspi.Role.APPLICATION) else tuple(parent) if parent else ("", "")
+        self.parent_links.move_to_end(key)
+        while len(self.parent_links) > 8192:
+            self.parent_links.popitem(last=False)
+        protected = role_id == int(Atspi.Role.PASSWORD_TEXT) or "password" in role.lower()
+        result = {"node_ref": ref, "pid": pid, "process_start": identity,
+            "role": role[:128], "role_id": role_id, "role_key": Atspi.Role.__enum_values__.get(role_id, Atspi.Role.UNKNOWN).value_nick, "name": "" if protected else str(props.get("Name", ""))[:512],
+            "description": "" if protected else str(props.get("Description", ""))[:512],
+            "interfaces": [str(interface)[:255] for interface in interfaces[:32]], "states": states, "depth": depth, "protected": protected,
+            "child_count": max(0, int(props.get("ChildCount", 0))), "source": "native-atspi",
+            "observed_ns": time.monotonic_ns()}
+        if details:
+            result["actions"] = self.actions(owner, path) if API + "Action" in interfaces else []
+            if API + "Component" in interfaces:
+                try:
+                    rect = self.call(self.bus, owner, path, API + "Component", "GetExtents", "(u)", (1,))[0]
+                    result["bounds"] = self.map_bounds(owner, path, rect, pid, props, role_id)
+                except GLib.Error:
+                    result["bounds"] = {"mapping": "bounds_unavailable"}
+            if API + "Value" in interfaces and not protected:
+                value = self.properties(owner, path, API + "Value")
+                result["value"] = {k: v for k, v in value.items() if k in {"MinimumValue", "MaximumValue", "MinimumIncrement", "CurrentValue"} and isinstance(v, (int, float)) and math.isfinite(v)}
+        return result
+
+    def actions(self, owner, path):
+        items = self.call(self.bus, owner, path, API + "Action", "GetActions")[0]
+        if len(items) > 32:
+            raise RuntimeError("ACTION_BUDGET_EXCEEDED")
+        return [{"index": i, "name": self.call(self.bus, owner, path, API + "Action", "GetName", "(i)", (i,))[0][:128],
+            "localized_name": str(item[0])[:128], "description": str(item[1])[:256], "key_binding": str(item[2])[:128]}
+            for i, item in enumerate(items)]
+
+    def control_read(self, method):
+        state = json.loads((self.runtime / "state.json").read_text())
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+            peer.settimeout(.25)
+            peer.connect(str(self.runtime / "control.sock"))
+            pid, uid, _ = struct.unpack("3i", peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if pid != state.get("daemon_pid") or uid != os.getuid():
+                raise RuntimeError("CONTROL_PEER_MISMATCH")
+            peer.sendall((json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}}) + "\n").encode())
+            data = bytearray()
+            while b"\n" not in data:
+                value = peer.recv(16384)
+                if not value or len(data) + len(value) > 1048576:
+                    raise RuntimeError("CONTROL_READ_FAILED")
+                data.extend(value)
+        return json.loads(data.split(b"\n")[0])["result"]
+
+    def map_bounds(self, owner, path, rect, pid, props, role_id):
+        raw = {"x": rect[0], "y": rect[1], "width": rect[2], "height": rect[3], "coordinate_space": "atspi-window"}
+        result = {**raw, "mapping": "bounds_unmapped"}
+        if rect[0] == -2147483648 or rect[1] == -2147483648:
+            return {**result, "reason": "toolkit_position_unavailable"}
+        document_roles = {int(getattr(Atspi.Role, name)) for name in
+                          ("DOCUMENT_WEB", "DOCUMENT_FRAME", "DOCUMENT_TEXT", "DOCUMENT_SPREADSHEET")
+                          if hasattr(Atspi.Role, name)}
+        try:
+            if self.windows_cache is None:
+                self.windows_cache = self.control_read("window.list")
+            # A web dialog can have an accessibility window role without a
+            # native surface. Keep walking until a real compositor window is
+            # identified; a same-name ambiguity remains unmapped.
+            lineage = []
+            window = None
+            for _ in range(16):
+                lineage.append((owner, path, role_id))
+                # A native Qt top-level QWidget can expose role PANEL. The
+                # kernel PID, unique title and extent are the authority here,
+                # not a toolkit-specific accessibility role spelling.
+                matches = [w for w in self.windows_cache if w["pid_verified"] and w["pid"] == pid and
+                           w["title"] == props.get("Name") and not w.get("popup")]
+                if len(matches) > 1:
+                    return result
+                if len(matches) == 1:
+                    window = matches[0]
+                    break
+                parent_owner, parent_path = props["Parent"]
+                self.scoped_peer(parent_owner)
+                parent_role = self.call(self.bus, parent_owner, parent_path, API + "Accessible", "GetRole")[0]
+                if parent_role == int(Atspi.Role.APPLICATION):
+                    break
+                owner, path, role_id = parent_owner, parent_path, parent_role
+                props = self.properties(owner, path, API + "Accessible")
+            if window is None:
+                return result
+            output = self.control_read("session.heartbeat")["output"]
+            if output["geometry_version"] != window["geometry_version"] or output.get("truncated"):
+                return {**result, "reason": "geometry_changed"}
+            extent = self.call(self.bus, owner, path, API + "Component", "GetExtents", "(u)", (1,))[0]
+            scale = float(output["scale"])
+            if not math.isfinite(scale) or not .25 <= scale <= 8:
+                return result
+            def close_rect(first, second):
+                return all(abs(a - b) <= 1 for a, b in zip(first, second))
+            logical = [0, 0, window["width"], window["height"]]
+            units = 1.0
+            evidence = []
+            if list(extent) != logical:
+                if abs(scale - 1) < .001 or not close_rect(extent, [v * scale for v in logical]):
+                    return result
+                units = scale
+                evidence.append({"kind": "window_extent_scale", "extent": extent, "logical": logical})
+            # Embedded document trees can use physical pixels even when their
+            # toolkit frame uses logical units. Match the complete viewport
+            # rectangle against its immediate parent, not a product name.
+            for index, (peer, node_path, node_role) in enumerate(lineage[:-1]):
+                if node_role not in document_roles:
+                    continue
+                document = self.call(self.bus, peer, node_path, API + "Component", "GetExtents", "(u)", (1,))[0]
+                parent_peer, parent_path, _ = lineage[index + 1]
+                parent = self.call(self.bus, parent_peer, parent_path, API + "Component", "GetExtents", "(u)", (1,))[0]
+                if min(document[2], document[3], parent[2], parent[3]) <= 0:
+                    return {**result, "reason": "document_extent_unavailable"}
+                if abs(scale - 1) >= .001 and close_rect(document, [v * scale for v in parent]):
+                    if units != 1:
+                        return {**result, "reason": "multiple_coordinate_scales"}
+                    units = scale
+                    evidence.append({"kind": "document_parent_extent_scale", "document": document, "parent": parent})
+                elif document[2] > parent[2] + 1 or document[3] > parent[3] + 1:
+                    # A large scrollable document or inconsistent toolkit may
+                    # need a different transform. Do not invent one from size.
+                    return {**result, "reason": "document_coordinate_units_unconfirmed"}
+            if rect[2] < 0 or rect[3] < 0:
+                return result
+            mapped = {"x": rect[0] / units + window["x"], "y": rect[1] / units + window["y"],
+                "width": rect[2] / units, "height": rect[3] / units,
+                "coordinate_space": "output-logical", "mapping": "compositor_scaled" if evidence else "compositor_verified",
+                "window_id": window["id"], "geometry_version": window["geometry_version"], "raw": raw}
+            if evidence:
+                mapped.update({"coordinate_scale": units, "unit_inferred": True, "scale_evidence": evidence,
+                               "requires_visual_confirmation": True})
+            return mapped
+        except (OSError, KeyError, TypeError, ValueError, GLib.Error, RuntimeError):
+            return result
+
+    def resolve(self, ref):
+        self.drain_events()
+        if not isinstance(ref, str) or len(ref) > 200:
+            raise RuntimeError("STALE_NODE_REF")
+        record = self.references.get(ref)
+        if record:
+            timestamp, owner, path, pid, identity, generation, owner_generation = record
+            if time.monotonic() - timestamp <= 30 and self.scoped_peer(owner) == (pid, identity) and \
+               generation == self.generations.get((owner, path), 0) and owner_generation == self.owner_generations.get(owner, 0):
+                return owner, path
+        raise RuntimeError("STALE_NODE_REF")
+
+    def get_node(self, ref, details=True):
+        owner, path = self.resolve(ref)
+        try:
+            return self.node(owner, path, 0, ref, details)
+        except GLib.Error as error:
+            if error.matches(Gio.dbus_error_quark(), Gio.DBusError.UNKNOWN_OBJECT):
+                raise RuntimeError("STALE_NODE_REF") from error
+            raise
+
+    def text(self, request):
+        ref = request.get("node_ref")
+        owner, path = self.resolve(ref)
+        node = self.node(owner, path, 0, ref)
+        if node["protected"]:
+            raise RuntimeError("PROTECTED_CONTENT")
+        if API + "Text" not in node["interfaces"]:
+            raise RuntimeError("TEXT_UNSUPPORTED")
+        start, count = request.get("start", 0), request.get("count", 1024)
+        if type(start) is not int or start < 0 or type(count) is not int or not 1 <= count <= 4096:
+            raise RuntimeError("INVALID_TEXT_RANGE")
+        total = self.call(self.bus, owner, path, "org.freedesktop.DBus.Properties", "Get", "(ss)", (API + "Text", "CharacterCount"))[0]
+        if start > total:
+            raise RuntimeError("INVALID_TEXT_RANGE")
+        end = min(total, start + count)
+        text = self.call(self.bus, owner, path, API + "Text", "GetText", "(ii)", (start, end))[0]
+        if len(text.encode()) > 32768 or len(text) > count:
+            raise RuntimeError("TEXT_RESPONSE_TOO_LARGE")
+        return {"node_ref": ref, "text": text, "start": start, "end": end, "character_count": total,
+            "truncated": end < total, "observed_ns": time.monotonic_ns(), "source": "native-atspi"}
+
+    def text_state(self, request):
+        """Read application offsets without fetching text or changing selection."""
+        started = time.monotonic_ns()
+        ref = request.get("node_ref")
+        owner, path = self.resolve(ref)
+        node = self.node(owner, path, 0, ref)
+        if node["protected"]:
+            raise RuntimeError("PROTECTED_CONTENT")
+        if API + "Text" not in node["interfaces"]:
+            raise RuntimeError("TEXT_UNSUPPORTED")
+        def prop(name):
+            return self.call(self.bus, owner, path, "org.freedesktop.DBus.Properties", "Get", "(ss)", (API + "Text", name))[0]
+        total, caret = prop("CharacterCount"), prop("CaretOffset")
+        count = self.call(self.bus, owner, path, API + "Text", "GetNSelections")[0]
+        if type(total) is not int or total < 0 or type(caret) is not int or not -1 <= caret <= total or type(count) is not int or count < 0:
+            raise RuntimeError("INVALID_TEXT_STATE")
+        selections = []
+        for index in range(min(count, 16)):
+            start, end = self.call(self.bus, owner, path, API + "Text", "GetSelection", "(i)", (index,))
+            if type(start) is not int or type(end) is not int or not 0 <= start <= end <= total:
+                raise RuntimeError("TEXT_STATE_CHANGED")
+            selections.append({"index": index, "start": start, "end": end})
+        # Sequential AT-SPI reads are not a transaction. Detect observable drift
+        # without pretending stable counts prove an atomic selection snapshot.
+        if prop("CharacterCount") != total or prop("CaretOffset") != caret or self.call(self.bus, owner, path, API + "Text", "GetNSelections")[0] != count:
+            raise RuntimeError("TEXT_STATE_CHANGED")
+        return {"node_ref": ref, "character_count": total, "caret_offset": caret,
+            "selection_count": count, "selections": selections, "truncated": count > 16,
+            "offset_unit": "application-text-offset", "atomic": False,
+            "started_ns": started, "observed_ns": time.monotonic_ns(), "source": "native-atspi"}
+
+    def prepare(self, request, peer_pid):
+        # This route only produces a checked call description. Actual writes are
+        # issued by the native daemon, on its control loop, after final authority.
+        state = json.loads((self.runtime / "state.json").read_text())
+        if peer_pid != state.get("daemon_pid") or request.get("session_id") != state.get("session_id"):
+            raise RuntimeError("NATIVE_CONTROL_REQUIRED")
+        argv = Path(f"/proc/{peer_pid}/cmdline").read_bytes().split(b"\0")
+        if str(self.runtime / "control.sock").encode() not in argv or state["session_id"].encode() not in argv:
+            raise RuntimeError("NATIVE_CONTROL_REQUIRED")
+        if Path(f"/proc/{peer_pid}/exe").resolve() != Path(__file__).resolve().with_name("agentseatd"):
+            raise RuntimeError("NATIVE_CONTROL_REQUIRED")
+        ref, kind = request.get("node_ref"), request.get("kind")
+        if kind not in WRITE_KINDS:
+            raise RuntimeError("ACTION_UNSUPPORTED")
+        owner, path = self.resolve(ref)
+        node = self.node(owner, path, 0, ref, details=True)
+        if node["protected"]:
+            raise RuntimeError("PROTECTED_CONTENT")
+        if "sensitive" not in node["states"]:
+            raise RuntimeError("NODE_DISABLED")
+        prepared = {"kind": kind}
+        interface = {"a11y.perform": "Action", "a11y.set_text": "EditableText", "a11y.set_value": "Value",
+            "a11y.focus": "Component", "a11y.select": "Selection", "a11y.scroll_to": "Component"}[kind]
+        if API + interface not in node["interfaces"]:
+            raise RuntimeError("ACTION_UNSUPPORTED")
+        if kind == "a11y.perform":
+            action = request.get("action")
+            matches = [a for a in node["actions"] if (type(action) is int and a["index"] == action) or
+                       (isinstance(action, str) and a["name"] == action)]
+            if len(matches) != 1:
+                raise RuntimeError("ACTION_NOT_FOUND" if not matches else "ACTION_AMBIGUOUS")
+            prepared.update(action_index=matches[0]["index"], action_name=matches[0]["name"])
+        elif kind == "a11y.set_text":
+            value = request.get("text")
+            if not isinstance(value, str) or "\0" in value or len(value.encode()) > 32768:
+                raise RuntimeError("INVALID_TEXT")
+            if "editable" not in node["states"] or "read-only" in node["states"]:
+                raise RuntimeError("NODE_READ_ONLY")
+            prepared["text"] = value
+        elif kind == "a11y.set_value":
+            value = request.get("value")
+            limits = node.get("value", {})
+            if type(value) not in {int, float} or not math.isfinite(value) or not limits.get("MinimumValue", -math.inf) <= value <= limits.get("MaximumValue", math.inf):
+                raise RuntimeError("INVALID_VALUE")
+            if "read-only" in node["states"]:
+                raise RuntimeError("NODE_READ_ONLY")
+            prepared["value"] = value
+        elif kind == "a11y.focus":
+            if "focusable" not in node["states"]:
+                raise RuntimeError("NODE_NOT_FOCUSABLE")
+        elif kind == "a11y.select":
+            index = request.get("index")
+            if type(index) is not int or not 0 <= index < node["child_count"]:
+                raise RuntimeError("INVALID_SELECTION_INDEX")
+            prepared["index"] = index
+        elif kind == "a11y.scroll_to":
+            prepared["scroll_type"] = 6
+        return {"scope_id": self.scope_id, "prepared_ns": time.monotonic_ns(),
+            "bus_address": self.bus_address, "bus_pid": self.bus_pid, "bus_start": self.bus_start,
+            "bus_peer_pid": self.bus_peer_pid, "bus_peer_start": self.bus_peer_start,
+            "app_pid": self.app.pid, "app_start": self.app_start,
+            "owner": owner, "path": path, "pid": node["pid"], "process_start": node["process_start"],
+            "action": prepared}
+
+    def snapshot(self, root_ref=None, budget=1.5, max_nodes=512, max_depth=16):
+        if type(max_nodes) is not int or not 1 <= max_nodes <= 2048 or type(max_depth) is not int or not 0 <= max_depth <= 32:
+            raise RuntimeError("INVALID_TRAVERSAL_BUDGET")
+        self.deadline = time.monotonic() + budget
+        if self.launcher.poll() is not None or self.registry.poll() is not None:
+            raise RuntimeError("PRIVATE_BUS_UNAVAILABLE")
+        roots = [self.resolve(root_ref)] if root_ref else self.call(self.bus, "org.a11y.atspi.Registry", "/org/a11y/atspi/accessible/root",
+                          "org.a11y.atspi.Accessible", "GetChildren")[0]
+        pending = collections.deque()
+        for owner, path in roots[:256]:
+            try:
+                self.scoped_peer(owner)
+                pending.append((owner, path, 0, None))
+            except RuntimeError as error:
+                if str(error) != "ACCESSIBLE_OUTSIDE_APPLICATION_SCOPE":
+                    raise
+        snapshot_id = uuid.uuid4().hex
+        nodes, refs, seen, errors = [], {}, set(), []
+        incomplete = len(roots) > 256
+        while pending and len(nodes) < max_nodes:
+            owner, path, depth, parent_ref = pending.popleft()
+            if (owner, path) in seen:
+                continue
+            seen.add((owner, path))
+            if time.monotonic() >= self.deadline:
+                incomplete = True
+                break
+            ref = f"{self.scope_id}:{snapshot_id}:{len(nodes)}"
+            try:
+                node = self.node(owner, path, depth, ref)
+                children = self.call(self.bus, owner, path, "org.a11y.atspi.Accessible", "GetChildren")[0] if depth < max_depth else []
+            except (GLib.Error, RuntimeError) as error:
+                incomplete = True
+                if len(errors) < 16:
+                    errors.append({"kind": str(error) if isinstance(error, RuntimeError) else Gio.DBusError.get_remote_error(error) or "ACCESSIBILITY_READ_FAILED", "depth": depth})
+                continue
+            node["parent_ref"] = parent_ref
+            nodes.append(node)
+            refs[ref] = (owner, path, node["pid"], node["process_start"], self.generations.get((owner, path), 0))
+            self.references[ref] = (time.monotonic(), *refs[ref], self.owner_generations.get(owner, 0))
+            while len(self.references) > 4096:
+                self.references.popitem(last=False)
+            if depth >= max_depth:
+                incomplete |= node["child_count"] > 0
+            else:
+                remaining = max(0, max_nodes - len(pending) - len(nodes))
+                incomplete |= len(children) > remaining
+                pending.extend((child_owner, child_path, depth + 1, ref) for child_owner, child_path in children[:remaining])
+        result = {"snapshot_id": snapshot_id, "scope_id": self.scope_id, "nodes": nodes,
+                  "truncated": incomplete or bool(pending), "text_interface_read": False, "errors": errors,
+                  "traversal": {"max_nodes": max_nodes, "max_depth": max_depth, "budget_ms": int(budget * 1000)}}
+        self.snapshots[snapshot_id] = (time.monotonic(), result, refs)
+        while len(self.snapshots) > 4:
+            self.snapshots.popitem(last=False)
+        return result
+
+    def event_read(self, after, limit=64):
+        if type(after) is not int or after < 0 or after > self.event_seq or type(limit) is not int or not 1 <= limit <= 128:
+            raise RuntimeError("INVALID_EVENT_CURSOR")
+        oldest = self.events[0]["event_seq"] if self.events else self.event_seq + 1
+        values = [event for event in self.events if event["event_seq"] > after][:limit]
+        return {"scope_id": self.scope_id, "events": values, "event_seq": self.event_seq,
+            "next_seq": values[-1]["event_seq"] if values else after,
+            "gap": after < oldest - 1, "code": "EVENT_GAP" if after < oldest - 1 else None,
+            "oldest_seq": oldest, "payloads": "metadata-only"}
+
+    @staticmethod
+    def matches(node, query):
+        name = query.get("name", "")
+        role = query.get("role")
+        interface = query.get("interface")
+        if interface is not None and (not isinstance(interface, str) or len(interface) > 128):
+            raise RuntimeError("INVALID_QUERY")
+        states = query.get("states", [])
+        if not isinstance(name, str) or len(name) > 256 or (role is not None and not isinstance(role, str)) or not isinstance(states, list) or len(states) > 16 or any(s not in STATE_NAMES.values() for s in states):
+            raise RuntimeError("INVALID_QUERY")
+        return ((node["name"] == name if query.get("exact") else name.casefold() in node["name"].casefold()) and
+                (role is None or role in {node["role"], node["role_key"]}) and
+                (interface is None or interface in node["interfaces"] or API + interface in node["interfaces"]) and set(states).issubset(node["states"]))
+
+    def evaluate(self, condition):
+        if not isinstance(condition, dict) or condition.get("kind") not in {"exists", "absent", "state", "text", "value"}:
+            raise RuntimeError("INVALID_CONDITION")
+        ref = condition.get("node_ref")
+        kind = condition["kind"]
+        if ref:
+            try:
+                nodes = [self.get_node(ref, details=kind == "value")]
+                incomplete = False
+            except RuntimeError as error:
+                if str(error) != "STALE_NODE_REF":
+                    raise
+                # A stale reference is never silently re-bound to a same-named node.
+                raise RuntimeError("STALE_NODE_REF") from error
+        else:
+            selector = condition.get("selector")
+            if not isinstance(selector, dict) or not selector.get("name"):
+                raise RuntimeError("CONDITION_TARGET_REQUIRED")
+            snapshot = self.snapshot(budget=max(.001, self.deadline - time.monotonic()))
+            incomplete = snapshot["truncated"]
+            nodes = [node for node in snapshot["nodes"] if self.matches(node, selector)]
+        if kind in {"exists", "absent"}:
+            satisfied = bool(nodes) if kind == "exists" else not nodes and not incomplete
+            return satisfied, {"matches": len(nodes), "truncated": incomplete}
+        if len(nodes) != 1:
+            if len(nodes) > 1:
+                raise RuntimeError("TARGET_AMBIGUOUS")
+            return False, {"matches": 0, "truncated": incomplete}
+        node = nodes[0]
+        if kind == "state":
+            state = condition.get("state")
+            if state not in STATE_NAMES.values() or type(condition.get("is", True)) is not bool:
+                raise RuntimeError("INVALID_CONDITION")
+            actual = state in node["states"]
+            return actual == condition.get("is", True), {"node_ref": node["node_ref"], "state": state, "actual": actual}
+        if kind == "text":
+            expected = condition.get("equals", condition.get("contains"))
+            if not isinstance(expected, str) or not 0 <= len(expected) <= 4096:
+                raise RuntimeError("INVALID_CONDITION")
+            actual = self.text({"node_ref": node["node_ref"], "start": condition.get("start", 0), "count": 4096})
+            ok = actual["text"] == expected and not actual["truncated"] if "equals" in condition else expected in actual["text"]
+            return ok, {"node_ref": node["node_ref"], "character_count": actual["character_count"], "range_truncated": actual["truncated"]}
+        expected = condition.get("equals")
+        if type(expected) not in {int, float} or not math.isfinite(expected):
+            raise RuntimeError("INVALID_CONDITION")
+        node = self.get_node(node["node_ref"])
+        if node["protected"]:
+            raise RuntimeError("PROTECTED_CONTENT")
+        actual = node.get("value", {}).get("CurrentValue")
+        if actual is None:
+            raise RuntimeError("VALUE_UNSUPPORTED")
+        return math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-9), {"node_ref": node["node_ref"], "actual": actual}
+
+    def wait_start(self, request):
+        timeout = request.get("timeout_ms", 5000)
+        condition = request.get("condition")
+        if type(timeout) is not int or not 0 <= timeout <= 30000 or not isinstance(condition, dict):
+            raise RuntimeError("INVALID_WAIT")
+        if sum(w["status"] == "pending" for w in self.waits.values()) >= MAX_WAITS:
+            raise RuntimeError("WAIT_CAPACITY")
+        self.drain_events()
+        wait_id = self.scope_id + ":" + uuid.uuid4().hex
+        # Event registration precedes this first evaluation. Subsequent events
+        # only wake a fresh condition check; any event is not success by itself.
+        start_seq = self.event_seq
+        now = time.monotonic()
+        job = {"wait_id": wait_id, "status": "pending", "condition": condition,
+            "deadline": now + timeout / 1000, "next_check": now, "start_seq": start_seq,
+            "last_seq": start_seq, "checks": 0, "event_gap": False}
+        self.waits[wait_id] = job
+        self.check_wait(job)
+        while len(self.waits) > 32:
+            for key, old in self.waits.items():
+                if old["status"] != "pending":
+                    del self.waits[key]
+                    break
+            else:
+                break
+        return self.wait_json(job)
+
+    def check_wait(self, job):
+        now = time.monotonic()
+        if job["checks"] and now >= job["deadline"]:
+            job["status"] = "deadline_exceeded"
+            return
+        self.deadline = now + min(.3, max(.001, job["deadline"] - now))
+        self.windows_cache = None
+        job["checks"] += 1
+        job["last_seq"] = self.event_seq
+        oldest = self.events[0]["event_seq"] if self.events else self.event_seq + 1
+        job["event_gap"] |= job["start_seq"] < oldest - 1
+        try:
+            matched, proof = self.evaluate(job["condition"])
+            job["proof"] = proof
+            if matched:
+                job["status"] = "satisfied"
+        except (GLib.Error, RuntimeError) as error:
+            kind = str(error) if isinstance(error, RuntimeError) else "ACCESSIBILITY_READ_FAILED"
+            if kind not in {"READ_BUDGET_EXCEEDED", "ACCESSIBILITY_READ_FAILED"}:
+                job.update(status="failed", error=kind)
+        now = time.monotonic()
+        if job["status"] == "pending" and now >= job["deadline"]:
+            job["status"] = "deadline_exceeded"
+        job["next_check"] = now + .5
+
+    def wait_json(self, job):
+        return {key: job[key] for key in ("wait_id", "status", "start_seq", "last_seq", "checks", "event_gap", "proof", "error") if key in job}
+
+    def tick_waits(self):
+        now = time.monotonic()
+        # At most one potentially slow condition check per bridge turn.
+        for job in self.waits.values():
+            if job["status"] == "pending" and (now >= job["next_check"] or (self.event_seq > job["last_seq"] and now >= job["next_check"] - .4)):
+                self.check_wait(job)
+                break
+
+    def request(self, request, peer_pid=None):
+        if not isinstance(request, dict) or request.get("scope_id") != self.scope_id:
+            raise RuntimeError("SCOPE_MISMATCH")
+        method = request.get("method")
+        self.windows_cache = None
+        self.deadline = time.monotonic() + 1.5
+        if method == "a11y.status":
+            return {**self.receipt, "event_seq": self.event_seq,
+                "capabilities": {"read": ["snapshot", "query", "get", "text", "text_state"],
+                    "native_writes": sorted(WRITE_KINDS), "events": True, "wait": True}}
+        if not self.enable_a11y:
+            raise RuntimeError("A11Y_DISABLED")
+        if method in WRITE_KINDS:
+            raise RuntimeError("NATIVE_CONTROL_REQUIRED")
+        if method == "a11y.prepare":
+            return self.prepare(request, peer_pid)
+        if method == "a11y.get":
+            return self.get_node(request.get("node_ref"))
+        if method == "a11y.text":
+            return self.text(request)
+        if method == "a11y.text_state":
+            return self.text_state(request)
+        if method == "events.subscribe":
+            # Seed and validate application peers, registering their event source.
+            self.snapshot()
+            self.drain_events()
+            return {"scope_id": self.scope_id, "event_seq": self.event_seq, "capacity": MAX_EVENTS}
+        if method == "events.read":
+            self.drain_events()
+            return self.event_read(request.get("after", 0), request.get("limit", 64))
+        if method == "wait.start":
+            return self.wait_start(request)
+        if method in {"wait.get", "wait.cancel"}:
+            job = self.waits.get(request.get("wait_id"))
+            if not job:
+                raise RuntimeError("WAIT_NOT_FOUND")
+            if method == "wait.cancel" and job["status"] == "pending":
+                job["status"] = "cancelled"
+            return self.wait_json(job)
+        if method not in {"a11y.snapshot", "a11y.query"}:
+            raise RuntimeError("READ_ONLY_METHOD_NOT_FOUND")
+        limit, offset = request.get("limit", 64), request.get("offset", 0)
+        if type(limit) is not int or not 1 <= limit <= 128 or type(offset) is not int or not 0 <= offset <= 2048:
+            raise RuntimeError("INVALID_PAGE")
+        snapshot_id = request.get("snapshot_id")
+        if snapshot_id:
+            cached = self.snapshots.get(snapshot_id)
+            if not cached or time.monotonic() - cached[0] > 30:
+                raise RuntimeError("SNAPSHOT_EXPIRED")
+            result = dict(cached[1])
+        else:
+            result = dict(self.snapshot(request.get("root_ref"), max_nodes=request.get("max_nodes", 512), max_depth=request.get("max_depth", 16)))
+        nodes = result["nodes"]
+        if method == "a11y.query":
+            if request.get("selector") is not None:
+                selector = request["selector"]
+                if not isinstance(selector, dict):
+                    raise RuntimeError("INVALID_QUERY")
+                nodes = [n for n in nodes if self.matches(n, selector)]
+            else:
+                query = request.get("query", "")
+                if not isinstance(query, str) or not query or len(query) > 256:
+                    raise RuntimeError("INVALID_QUERY")
+                nodes = [n for n in nodes if query.casefold() in (n["name"] + " " + n["role"]).casefold()]
+        result.update({"nodes": nodes[offset:offset + limit], "total": len(nodes),
+                       "next_offset": offset + limit if offset + limit < len(nodes) else None})
+        return result
+
+    def serve(self):
+        path = self.runtime / "a11y.sock"
+        path.unlink(missing_ok=True)
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(path)); os.chmod(path, 0o600); server.listen(16); server.setblocking(False)
+        selector = selectors.DefaultSelector()
+        selector.register(server, selectors.EVENT_READ, None)
+        clients = {}
+        receipt = self.runtime / "a11y.json"
+        receipt.write_text(json.dumps(self.receipt)); os.chmod(receipt, 0o600)
+        try:
+            while self.app.poll() is None:
+                self.drain_events()
+                self.tick_waits()
+                for key, _ in selector.select(.05):
+                    if key.fileobj is server:
+                        client, _ = server.accept()
+                        uid = struct.unpack("3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+                        if uid != os.getuid() or len(clients) >= 16:
+                            client.close(); continue
+                        client.setblocking(False)
+                        clients[client] = [bytearray(), time.monotonic() + 1, None]
+                        selector.register(client, selectors.EVENT_READ, True)
+                        continue
+                    client = key.fileobj
+                    buffer, deadline, response = clients[client]
+                    try:
+                        if response is not None:
+                            sent = client.send(response)
+                            clients[client][2] = response[sent:]
+                            if sent == len(response):
+                                clients[client][1] = 0
+                            continue
+                        chunk = client.recv(16384)
+                        buffer.extend(chunk)
+                        if len(buffer) > 65536 or not chunk:
+                            clients[client][1] = 0; continue
+                        if b"\n" not in buffer:
+                            continue
+                        try:
+                            result = {"result": self.request(json.loads(buffer.split(b"\n")[0]), struct.unpack("3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[0])}
+                        except Exception as error:
+                            result = {"error": {"kind": str(error)[:160] if isinstance(error, RuntimeError) else "ACCESSIBILITY_READ_FAILED"}}
+                        clients[client][2] = (json.dumps(result, ensure_ascii=False) + "\n").encode()
+                        clients[client][1] = time.monotonic() + 1
+                        selector.modify(client, selectors.EVENT_WRITE, True)
+                    except (OSError, ValueError):
+                        clients[client][1] = 0
+                for client, (_, deadline, _) in list(clients.items()):
+                    if time.monotonic() >= deadline:
+                        selector.unregister(client); client.close(); del clients[client]
+        finally:
+            for client in clients: client.close()
+            selector.close(); server.close(); path.unlink(missing_ok=True); receipt.unlink(missing_ok=True)
+
+    def close(self):
+        for child in reversed(self.children):
+            if child.poll() is None:
+                child.terminate()
+                try: child.wait(timeout=2)
+                except subprocess.TimeoutExpired: child.kill(); child.wait()
+        for bus in [self.bus, self.session]:
+            if bus and not bus.is_closed():
+                try: bus.close_sync(None)
+                except GLib.Error: pass
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument("--a11y", action="store_true")
+    parser.add_argument("--ime", choices=("simple", "fcitx5", "desktop", "inherit"), default="simple")
+    parser.add_argument("argv", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+    if not argv: parser.error("application command is required")
+    os.umask(0o077)
+    bridge = Bridge(args.runtime, args.a11y, args.ime)
+    def stop(_sig, _frame): raise SystemExit(0)
+    signal.signal(signal.SIGTERM, stop)
+    try:
+        bridge.start(argv)
+        bridge.serve()
+    finally:
+        bridge.close()
+
+
+if __name__ == "__main__":
+    main()

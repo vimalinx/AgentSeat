@@ -8,6 +8,8 @@ import os
 import subprocess
 import sys
 import time
+import uuid
+from xml.sax.saxutils import escape
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,9 @@ USER_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid
 AGENTSEAT_RUNTIME = Path(os.environ.get("AGENTSEAT_RUNTIME_DIR", USER_RUNTIME_DIR / "agentseat")).expanduser().resolve()
 DEFAULT_SPEC = AGENTSEAT_RUNTIME / "launch.json"
 DEFAULT_ENV_RECEIPT = AGENTSEAT_RUNTIME / "application-env.json"
+
+
+INPUT_ENVIRONMENT_NAMES = frozenset(('GTK_IM_MODULE', 'QT_IM_MODULE', 'QT_IM_MODULES', 'XMODIFIERS', 'XCOMPOSEFILE', 'XCOMPOSECACHE', 'IBUS_ADDRESS', 'IBUS_ADDRESS_FILE', 'IBUS_USE_PORTAL', 'DBUS_SESSION_BUS_ADDRESS', 'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE', 'XKB_DEFAULT_RULES', 'XKB_DEFAULT_MODEL', 'XKB_DEFAULT_LAYOUT', 'XKB_DEFAULT_VARIANT', 'XKB_DEFAULT_OPTIONS'))
 
 
 def load_spec(path: Path) -> dict[str, Any]:
@@ -36,17 +41,40 @@ def load_spec(path: Path) -> dict[str, Any]:
         raise RuntimeError("launch argv must be a non-empty string array")
     if spec.get("mode") not in {"wayland", "x11"}:
         raise RuntimeError("launch mode must be wayland or x11")
+    if not isinstance(spec.get("private_dbus", False), bool):
+        raise TypeError("launch private_dbus must be true or false")
+    if spec.get("private_dbus") and spec.get("ime") == "desktop":
+        raise RuntimeError("DESKTOP_IME_REQUIRES_DESKTOP_SESSION_BUS")
+    input_environment = spec.get("input_environment", {})
+    if not isinstance(input_environment, dict) or any(
+        name not in INPUT_ENVIRONMENT_NAMES or (value is not None and (not isinstance(value, str) or "\0" in value))
+        for name, value in input_environment.items()
+    ):
+        raise RuntimeError("invalid input environment in launch specification")
     return spec
 
 
 def launch(spec: dict[str, Any]) -> None:
     argv = spec["argv"]
     environment = dict(os.environ)
+    for name, value in spec.get("input_environment", {}).items():
+        if value is None:
+            environment.pop(name, None)
+        else:
+            environment[name] = value
+    # The accessibility supervisor uses its own bus. Preserve the caller's bus
+    # separately for the normal desktop input-method mode.
+    if spec.get("ime") in {"desktop", "inherit"} and not spec.get("private_dbus", False):
+        address = environment.get("DBUS_SESSION_BUS_ADDRESS")
+        if not address and spec.get("ime") == "desktop":
+            raise RuntimeError("DESKTOP_IME_SESSION_BUS_UNAVAILABLE")
+        if address:
+            environment["AGENTSEAT_DESKTOP_BUS"] = address
     inner_wayland_display = environment.get("WAYLAND_DISPLAY")
-    # The host IME socket belongs to the host seat. Keep Agent input on direct
-    # toolkit key events inside the micro-host instead of queueing against an
-    # unreachable host IBus connection.
-    environment.update({"GTK_IM_MODULE": "gtk-im-context-simple", "QT_IM_MODULE": "", "XMODIFIERS": "@im=none"})
+    # Preserve the user's toolkit modules, compose file, locale and engine
+    # address by default. Disabling input methods is an explicit opt-out.
+    if spec.get("ime", "simple") == "simple":
+        environment.update({"GTK_IM_MODULE": "gtk-im-context-simple", "QT_IM_MODULE": "", "XMODIFIERS": "@im=none"})
     x_display = spec.get("x_display")
     if isinstance(x_display, str) and x_display:
         environment["DISPLAY"] = x_display
@@ -61,24 +89,6 @@ def launch(spec: dict[str, Any]) -> None:
                 "XDG_SESSION_TYPE": "x11",
             }
         )
-        if environment.get("AGENTSEAT_PHYSICAL_LAYOUT") == "1":
-            try:
-                host_scale = float(environment.get("AGENTSEAT_HOST_SCALE", "1"))
-            except ValueError:
-                host_scale = 1.0
-            if 1.0 <= host_scale <= 4.0:
-                scale = f"{host_scale:.6g}"
-                # XWayland now exposes the real physical pixel grid. Ask the
-                # common X11 toolkits to keep widgets at the host's logical
-                # size while retaining physical-pixel text and icon detail.
-                environment.update(
-                    {
-                        "QT_AUTO_SCREEN_SCALE_FACTOR": "0",
-                        "QT_SCALE_FACTOR": scale,
-                        "GDK_SCALE": "1",
-                        "GDK_DPI_SCALE": scale,
-                    }
-                )
         if environment.get("AGENTSEAT_SKIP_X11_READY") != "1":
             deadline = time.monotonic() + 8
             while True:
@@ -105,43 +115,52 @@ def launch(spec: dict[str, Any]) -> None:
                 "XDG_SESSION_TYPE": "wayland",
             }
         )
-        if environment.get("AGENTSEAT_PHYSICAL_LAYOUT") == "1":
-            # Host-session scale overrides describe the host compositor's
-            # logical output. They must not be inherited by a client that is
-            # already receiving AgentSeat's physical pixel grid; applications
-            # with an internal UI scale can then apply it without Qt shrinking
-            # their surface a second time.
-            for name in (
-                "QT_SCALE_FACTOR",
-                "QT_SCREEN_SCALE_FACTORS",
-                "QT_DEVICE_PIXEL_RATIO",
-                "QT_AUTO_SCREEN_SCALE_FACTOR",
-                "GDK_SCALE",
-                "GDK_DPI_SCALE",
-            ):
-                environment.pop(name, None)
-            try:
-                host_scale = float(environment.get("AGENTSEAT_HOST_SCALE", "1"))
-            except ValueError:
-                host_scale = 1.0
-            if 1.0 <= host_scale <= 4.0:
-                environment["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
-                environment["QT_FONT_DPI"] = str(round(96 * host_scale))
     receipt_path = Path(os.environ.get("AGENTSEAT_ENV_RECEIPT", DEFAULT_ENV_RECEIPT))
     receipt_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     receipt = {
         "wayland_display": inner_wayland_display,
         "display": environment.get("DISPLAY"),
     }
-    temporary = receipt_path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(receipt, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    temporary.replace(receipt_path)
+    temporary = receipt_path.with_name(f".{receipt_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(receipt, ensure_ascii=False, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o600)
+        temporary.replace(receipt_path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
     cwd = spec.get("cwd")
     if cwd is not None:
         if not isinstance(cwd, str):
             raise RuntimeError("launch cwd must be a string or null")
         os.chdir(cwd)
+    supervised = spec.get("a11y", False) or spec.get("ime") in {"desktop", "fcitx5"}
+    if supervised:
+        options = ["--a11y"] if spec.get("a11y", False) else []
+        argv = [str(AGENTSEAT_ROOT / "bin/agentseat-a11y"), "--runtime", str(AGENTSEAT_RUNTIME),
+                "--ime", spec.get("ime", "simple"), *options, "--", *argv]
+    if spec.get("private_dbus", False) or supervised:
+        dbus_run_session = Path("/usr/bin/dbus-run-session")
+        if not dbus_run_session.is_file() or not os.access(dbus_run_session, os.X_OK):
+            raise RuntimeError("private D-Bus requested but dbus-run-session is unavailable")
+        bus_options = []
+        if supervised:
+            # Supervise the exact optional services. Do not activate unrelated
+            # host portal/GVfs/systemd helpers on this application's private bus.
+            bus_config = AGENTSEAT_RUNTIME / "session-bus.conf"
+            bus_config.write_text("<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n"
+                "<busconfig><type>session</type><listen>unix:tmpdir=" + escape(str(AGENTSEAT_RUNTIME)) +
+                "</listen><auth>EXTERNAL</auth><policy context=\"default\">"
+                "<allow send_destination=\"*\"/><allow receive_sender=\"*\"/><allow own=\"*\"/>"
+                "</policy></busconfig>\n")
+            os.chmod(bus_config, 0o600)
+            bus_options = ["--config-file", str(bus_config)]
+        argv = [str(dbus_run_session), *bus_options, "--", *argv]
     os.execvpe(argv[0], argv, environment)
 
 
@@ -154,6 +173,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, TypeError) as exc:
         print(f"agentseat launch failed: {exc}", file=sys.stderr)
         raise SystemExit(1)

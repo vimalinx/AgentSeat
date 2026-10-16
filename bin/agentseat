@@ -6,24 +6,34 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import fcntl
 import gettext
+import hashlib
 import json
 import math
 import os
+import re
+import shlex
 import signal
+import shutil
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import time
-import tomllib
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import tomllib
+
+EXPECTED_A11Y_SCOPE = None
 ROOT = Path(os.environ.get("AGENTSEAT_ROOT", Path(__file__).resolve().parents[1])).resolve()
-AGENTSEAT_VERSION = "0.5.0"
+AGENTSEAT_VERSION = "0.5.2"
 USER_HOME = Path.home()
+XDG_STATE_BASE = Path(os.environ.get("XDG_STATE_HOME", USER_HOME / ".local/state")).expanduser().resolve()
 CONFIG_HOME = Path(
     os.environ.get(
         "AGENTSEAT_CONFIG_HOME",
@@ -36,12 +46,8 @@ DATA_HOME = Path(
         Path(os.environ.get("XDG_DATA_HOME", USER_HOME / ".local/share")) / "agentseat",
     )
 ).expanduser().resolve()
-STATE_HOME = Path(
-    os.environ.get(
-        "AGENTSEAT_STATE_HOME",
-        Path(os.environ.get("XDG_STATE_HOME", USER_HOME / ".local/state")) / "agentseat",
-    )
-).expanduser().resolve()
+DEFAULT_STATE_HOME = XDG_STATE_BASE / "agentseat"
+STATE_HOME = Path(os.environ.get("AGENTSEAT_STATE_HOME", DEFAULT_STATE_HOME)).expanduser().resolve()
 CACHE_HOME = Path(
     os.environ.get(
         "AGENTSEAT_CACHE_HOME",
@@ -50,6 +56,9 @@ CACHE_HOME = Path(
 ).expanduser().resolve()
 USER_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
 RUNTIME = Path(os.environ.get("AGENTSEAT_RUNTIME_DIR", USER_RUNTIME_DIR / "agentseat")).expanduser().resolve()
+INSTANCE_RUNTIME_ROOT = USER_RUNTIME_DIR / "agentseat-apps"
+INSTANCE_STATE_ROOT = DEFAULT_STATE_HOME / "apps"
+SELECTED_INSTANCE = os.environ.get("AGENTSEAT_INSTANCE")
 LOG_DIR = STATE_HOME / "logs"
 EVIDENCE = STATE_HOME / "captures"
 CONFIG_FILE = Path(os.environ.get("AGENTSEAT_CONFIG_FILE", CONFIG_HOME / "config.toml")).expanduser().resolve()
@@ -62,16 +71,34 @@ LAUNCH_APP = ROOT / "bin/launch-app"
 CLIPBOARD_OWNER = ROOT / "bin/x11-clipboard-owner"
 MICROHOST_EXE = ROOT / "bin/agentseat-microhost"
 GRIM = Path("/usr/bin/grim")
-WL_COPY = Path("/usr/bin/wl-copy")
-WL_PASTE = Path("/usr/bin/wl-paste")
 MICROHOST_PID = RUNTIME / "microhost.pid"
 EYE_PID = RUNTIME / "eye.pid"
 APPLICATION_ENV = RUNTIME / "application-env.json"
-APPLICATION_FIT = RUNTIME / "application-fit.json"
 MICROHOST_READY = RUNTIME / "microhost.ready"
 CONTROL_SOCKET = RUNTIME / "control.sock"
 ACTIVITY_SOCKET = RUNTIME / "human.sock"
+LIFECYCLE_LOCK = RUNTIME / "lifecycle.lock"
 RPC_LIMIT = 1_048_576
+RPC_SESSION_ID: str | None = None
+RPC_CONTROL_EPOCH: int | None = None
+RPC_WRITE_LEASE: dict[str, Any] | None = None
+RPC_CONTROLLER_ID = os.environ.get("AGENTSEAT_CONTROLLER_ID", "")
+if not RPC_CONTROLLER_ID:
+    parent_pid = os.getppid()
+    try:
+        parent_start = Path(f"/proc/{parent_pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        parent_start = uuid.uuid4().hex
+    RPC_CONTROLLER_ID = f"cli:{parent_pid}:{parent_start}"
+WRITE_METHODS = frozenset({
+    "seat.create", "seat.destroy", "seat.pause", "seat.resume", "shutdown",
+    "window.geometry", "window.lease", "window.release", "window.focus",
+    "window.move", "window.resize", "window.close", "pointer.move_absolute", "pointer.button",
+    "pointer.click", "pointer.scroll", "keyboard.key", "keyboard.type", "keyboard.paste",
+    "operation.cancel", "activity.set", "chat.send", "chat.reply",
+    "control.acquire", "control.renew", "control.release",
+    "a11y.perform", "a11y.set_text", "a11y.set_value", "a11y.focus", "a11y.select", "a11y.scroll_to",
+})
 SUPPORTED_LANGUAGES = {
     "en": "en",
     "en-us": "en",
@@ -241,6 +268,8 @@ def output_json(value: Any) -> None:
 
 def storage_paths() -> dict[str, Any]:
     return {
+        "instance": SELECTED_INSTANCE or "default",
+        "python_sdk": str((ROOT / "share/python/agentseat_client.py") if (ROOT / "share/python/agentseat_client.py").exists() else ROOT / "python/agentseat_client.py"),
         "config": str(CONFIG_HOME),
         "config_file": str(CONFIG_FILE),
         "data": str(DATA_HOME),
@@ -316,6 +345,47 @@ def ensure_runtime_storage() -> None:
         ensure_private_directory(path)
 
 
+@contextmanager
+def lifecycle_lock() -> Any:
+    """Serialize start/stop transactions for one runtime namespace."""
+    ensure_private_directory(RUNTIME)
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(LIFECYCLE_LOCK, flags, 0o600)
+    except OSError as exc:
+        message = _("refusing to use an unexpected AgentSeat lifecycle lock: {path}").format(
+            path=LIFECYCLE_LOCK
+        )
+        raise AgentSeatError(f"{message}: {exc}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise AgentSeatError(
+                _("refusing to use an unexpected AgentSeat lifecycle lock: {path}").format(path=LIFECYCLE_LOCK)
+            )
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def atomic_write_private_text(path: Path, content: str) -> None:
+    ensure_private_directory(path.parent)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def open_private_log(path: Path) -> Any:
     ensure_private_directory(path.parent)
     stream = path.open("ab", buffering=0)
@@ -327,7 +397,7 @@ def version() -> dict[str, Any]:
     result: dict[str, Any] = {
         "controller": "agentseat",
         "version": AGENTSEAT_VERSION,
-        "protocol_version": 1,
+        "protocol_version": 2,
         "daemon": None,
     }
     if CONTROL_SOCKET.exists():
@@ -349,6 +419,100 @@ def proc_exe(pid: int) -> str:
         return ""
 
 
+def proc_argv(pid: int) -> list[str]:
+    try:
+        encoded = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [item.decode(errors="replace") for item in encoded.split(b"\0") if item]
+
+
+def proc_environment_value(pid: int, name: str) -> str | None:
+    try:
+        encoded = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return None
+    prefix = os.fsencode(f"{name}=")
+    for item in encoded.split(b"\0"):
+        if item.startswith(prefix):
+            return os.fsdecode(item[len(prefix):])
+    return None
+
+
+def argv_has_pair(pid: int, option: str, expected: Path) -> bool:
+    argv = proc_argv(pid)
+    return any(
+        value == option and index + 1 < len(argv) and argv[index + 1] == str(expected)
+        for index, value in enumerate(argv)
+    )
+
+
+def executable_name(pid: int) -> str:
+    executable = proc_exe(pid).removesuffix(" (deleted)")
+    return Path(executable).name if executable else ""
+
+
+def daemon_belongs_to_runtime(pid: int) -> bool:
+    if executable_name(pid) != NATIVE_DAEMON.name:
+        return False
+    return argv_has_pair(pid, "--socket", CONTROL_SOCKET)
+
+
+def microhost_belongs_to_runtime(pid: int, runtime: Path | None = None) -> bool:
+    target_runtime = runtime if runtime is not None else RUNTIME
+    return (
+        executable_name(pid) == MICROHOST_EXE.name
+        and proc_environment_value(pid, "AGENTSEAT_RUNTIME_DIR") == str(target_runtime)
+    )
+
+
+def eye_belongs_to_runtime(pid: int) -> bool:
+    return (
+        executable_name(pid) == EYE_BINARY.name
+        and argv_has_pair(pid, "--socket", CONTROL_SOCKET)
+    )
+
+
+def list_instances() -> dict[str, Any]:
+    instances: list[dict[str, Any]] = []
+    if not INSTANCE_RUNTIME_ROOT.is_dir():
+        return {"count": 0, "instances": instances}
+    for runtime in sorted(INSTANCE_RUNTIME_ROOT.iterdir(), key=lambda item: item.name):
+        if runtime.is_symlink() or not runtime.is_dir():
+            continue
+        if not re.fullmatch(r"app-[0-9a-f]{24}", runtime.name):
+            continue
+        state_path = runtime / "state.json"
+        try:
+            state_value = json.loads(state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            continue
+        try:
+            instance_id = normalize_instance_id(str(state_value.get("instance", "")))
+        except argparse.ArgumentTypeError:
+            continue
+        if instance_directory_name(instance_id) != runtime.name:
+            continue
+        try:
+            microhost = int((runtime / "microhost.pid").read_text(encoding="utf-8").strip())
+        except (FileNotFoundError, OSError, ValueError):
+            microhost = None
+        running = bool(
+            microhost
+            and microhost_belongs_to_runtime(microhost, runtime)
+            and (runtime / "control.sock").exists()
+        )
+        instances.append({
+            "instance": instance_id,
+            "running": running,
+            "session_id": state_value.get("session_id"),
+            "host_workspace": state_value.get("host_workspace"),
+            "microhost_pid": microhost if running else None,
+            "launch": state_value.get("launch", {}),
+        })
+    return {"count": len(instances), "instances": instances}
+
+
 def host_instance() -> dict[str, Any]:
     candidates = instances()
     if not candidates:
@@ -362,7 +526,7 @@ def microhost_pid() -> int | None:
         pid = int(MICROHOST_PID.read_text(encoding="utf-8").strip())
     except (FileNotFoundError, OSError, ValueError):
         return None
-    return pid if proc_exe(pid).removesuffix(" (deleted)") == str(MICROHOST_EXE) else None
+    return pid if microhost_belongs_to_runtime(pid) else None
 
 
 def eye_pid() -> int | None:
@@ -370,7 +534,7 @@ def eye_pid() -> int | None:
         pid = int(EYE_PID.read_text(encoding="utf-8").strip())
     except (FileNotFoundError, OSError, ValueError):
         return None
-    return pid if proc_exe(pid).removesuffix(" (deleted)") == str(EYE_BINARY) else None
+    return pid if eye_belongs_to_runtime(pid) else None
 
 
 def hypr_json(signature: str, command: str) -> Any:
@@ -407,11 +571,102 @@ def host_focus_relation(before: dict[str, Any], after: dict[str, Any], outer_win
     return "concurrent-host-change"
 
 
+def normalize_instance_id(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,47}", value):
+        raise argparse.ArgumentTypeError(
+            _("instance identifier must use 1-48 letters, digits, dots, underscores, or hyphens")
+        )
+    return value
+
+
+def instance_paths(instance_id: str) -> tuple[Path, Path]:
+    normalized = normalize_instance_id(instance_id)
+    directory_name = instance_directory_name(normalized)
+    return INSTANCE_RUNTIME_ROOT / directory_name, INSTANCE_STATE_ROOT / directory_name
+
+
+def instance_directory_name(instance_id: str) -> str:
+    normalized = normalize_instance_id(instance_id)
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+    return f"app-{digest}"
+
+
+def instance_environment(instance_id: str) -> dict[str, str]:
+    runtime, state_home = instance_paths(instance_id)
+    environment = dict(os.environ)
+    environment.update({
+        "AGENTSEAT_INSTANCE": instance_id,
+        "AGENTSEAT_RUNTIME_DIR": str(runtime),
+        "AGENTSEAT_STATE_HOME": str(state_home),
+    })
+    return environment
+
+
+def execute_for_instance(instance_id: str, argv: list[str]) -> None:
+    os.execve(
+        sys.executable,
+        [sys.executable, str(Path(__file__).resolve()), *argv],
+        instance_environment(instance_id),
+    )
+
+
+def launch_executable(argv: list[str]) -> str:
+    """Return the real command name when argv uses env as a generic wrapper."""
+    if not argv:
+        return "app"
+    index = 0
+    if Path(argv[0]).name == "env":
+        index = 1
+        options_with_values = {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}
+        while index < len(argv):
+            value = argv[index]
+            if value == "--":
+                index += 1
+                break
+            if value in options_with_values:
+                index += 2
+                continue
+            if value.startswith(("--unset=", "--chdir=", "--split-string=")):
+                index += 1
+                continue
+            if value.startswith("-") or "=" in value:
+                index += 1
+                continue
+            break
+    return argv[index] if index < len(argv) else argv[0]
+
+
+def allocate_instance_id(argv: list[str]) -> str:
+    basename = Path(launch_executable(argv)).name.casefold()
+    slug = re.sub(r"[^a-z0-9._-]+", "-", basename).strip(".-_") or "app"
+    slug = slug[:24]
+    for _attempt in range(16):
+        candidate = f"{slug}-{uuid.uuid4().hex[:8]}"
+        runtime, _state_home = instance_paths(candidate)
+        if not runtime.exists():
+            return candidate
+    raise AgentSeatError(_("could not allocate a unique AgentSeat instance identifier"))
+
+
+def launch_workspace(value: str) -> int:
+    if value.casefold() == "current":
+        workspace = host_snapshot(host_instance()).get("workspace")
+        if isinstance(workspace, int) and workspace > 0:
+            return workspace
+        raise AgentSeatError(_("current host workspace is unavailable"))
+    try:
+        workspace = int(value)
+    except ValueError as exc:
+        raise AgentSeatError(_("host workspace must be 'current' or a positive integer")) from exc
+    if workspace <= 0:
+        raise AgentSeatError(_("host workspace must be 'current' or a positive integer"))
+    return workspace
+
+
 def launch_window_properties(host_workspace: int, active_workspace: int | None) -> str:
     if host_workspace <= 0:
         raise AgentSeatError(_("host workspace must be a positive integer"))
     properties = [
-        "float true",
         "no_initial_focus true",
         "focus_on_activate false",
         "suppress_event activate activatefocus",
@@ -422,6 +677,47 @@ def launch_window_properties(host_workspace: int, active_workspace: int | None) 
         # It assigns only the new outer window and does not switch the host.
         properties.insert(0, f"workspace {host_workspace}")
     return f"[{'; '.join(properties)}]"
+
+
+def application_hud_position_file(argv: list[str], cwd: str | None = None) -> Path:
+    executable = launch_executable(argv)
+    base = Path(cwd or os.getcwd())
+    resolved = Path(shutil.which(executable) or (base / executable)).resolve()
+    identity = str(resolved)
+    # Keep script applications distinct even when they share an interpreter.
+    if resolved.name.startswith(("python", "pypy")):
+        args = argv[argv.index(executable) + 1:]
+        if args and args[0] == "-m" and len(args) > 1:
+            identity += " module:" + args[1]
+        elif args and not args[0].startswith("-"):
+            identity += " script:" + str((base / args[0]).resolve())
+    key = hashlib.sha256(identity.encode()).hexdigest()
+    directory = CONFIG_HOME / "applications" / key
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return directory / "hud-position.json"
+
+
+def microhost_launch_command(
+    launch_properties: str,
+    host_scale: float,
+    mode: str = "wayland",
+    hud_position_file: Path | None = None,
+) -> str:
+    environment = {
+        # This is compositor output scale, not an application zoom override.
+        # Render physical pixels while preserving the Hyprland logical size.
+        "AGENTSEAT_HOST_SCALE": f"{host_scale:.6g}",
+        "AGENTSEAT_APPLICATION_MODE": mode,
+        "AGENTSEAT_HUMAN_GRACE_MS": str(PREFERENCES["human_priority_grace_ms"]),
+        "AGENTSEAT_RUNTIME_DIR": str(RUNTIME),
+        "AGENTSEAT_STATE_HOME": str(STATE_HOME),
+    }
+    if hud_position_file is not None:
+        environment["AGENTSEAT_HUD_POSITION_FILE"] = str(hud_position_file)
+    assignments = " ".join(
+        shlex.quote(f"{name}={value}") for name, value in environment.items()
+    )
+    return f"{launch_properties} env {assignments} {shlex.quote(str(RUN_MICROHOST))}"
 
 
 def select_host_output_scale(
@@ -456,7 +752,7 @@ def select_host_output_scale(
 
 
 def physical_size_for_host(logical_size: int, host_scale: float) -> int:
-    return max(1, math.floor(logical_size * host_scale + 0.5))
+    return max(1, math.ceil(logical_size * host_scale))
 
 
 def load_state() -> dict[str, Any]:
@@ -469,21 +765,42 @@ def load_state() -> dict[str, Any]:
 
 
 def save_state(value: dict[str, Any]) -> None:
-    ensure_private_directory(RUNTIME)
-    temporary = STATE.with_suffix(".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
-    os.chmod(temporary, 0o600)
-    temporary.replace(STATE)
+    atomic_write_private_text(STATE, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
 def rpc(method: str, params: dict[str, Any] | None = None) -> Any:
     """Call the resident AgentSeat daemon without spawning an intermediate CLI."""
+    global RPC_SESSION_ID, RPC_CONTROL_EPOCH, RPC_WRITE_LEASE
+    payload = dict(params or {})
+    if method in WRITE_METHODS:
+        if RPC_SESSION_ID is None:
+            value = load_state().get("session_id")
+            if not isinstance(value, str) or not value:
+                raise AgentSeatError("SESSION_REQUIRED: no pinned session is available for this write")
+            RPC_SESSION_ID = value
+        payload.setdefault("session_id", RPC_SESSION_ID)
+        payload.setdefault("controller_id", RPC_CONTROLLER_ID)
+        if method.startswith(("pointer.", "keyboard.", "a11y.")) or method in {"window.focus", "window.move", "window.resize", "window.close"}:
+            if RPC_CONTROL_EPOCH is None:
+                heartbeat = rpc("session.heartbeat")
+                if heartbeat.get("session_id") != RPC_SESSION_ID:
+                    raise AgentSeatError("SESSION_MISMATCH: session changed before input")
+                RPC_CONTROL_EPOCH = int(heartbeat.get("control_epoch", 0))
+                if "write_control" in heartbeat:
+                    RPC_WRITE_LEASE = rpc("control.acquire", {"ttl_ms": 10000})
+                    RPC_CONTROL_EPOCH = RPC_WRITE_LEASE["control_epoch"]
+            payload.setdefault("control_epoch", RPC_CONTROL_EPOCH)
+            if RPC_WRITE_LEASE:
+                payload.setdefault("lease_id", RPC_WRITE_LEASE["lease_id"])
+        # Monotonic IDs make receipt eviction fail closed for old requests.
+        # Generate after any recursive heartbeat/acquire call.
+        payload.setdefault("request_id", time.monotonic_ns())
     request_id = uuid.uuid4().hex
     request = {
         "jsonrpc": "2.0",
         "id": request_id,
         "method": method,
-        "params": params or {},
+        "params": payload,
     }
     encoded = (json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
     received = bytearray()
@@ -500,7 +817,10 @@ def rpc(method: str, params: dict[str, Any] | None = None) -> Any:
                 if len(received) > RPC_LIMIT:
                     raise AgentSeatError(_("AgentSeat daemon response exceeds 1 MiB"))
     except OSError as exc:
-        raise AgentSeatError(_("cannot reach AgentSeat daemon: {error}").format(error=exc)) from exc
+        detail = _("cannot reach AgentSeat daemon: {error}").format(error=exc)
+        if method in WRITE_METHODS:
+            detail += f"; controller_id={payload['controller_id']}; request_id={payload['request_id']}; query receipt before retry"
+        raise AgentSeatError(detail) from exc
     if not received:
         raise AgentSeatError(_("AgentSeat daemon returned no response"))
     try:
@@ -511,7 +831,8 @@ def rpc(method: str, params: dict[str, Any] | None = None) -> Any:
         raise AgentSeatError(_("AgentSeat daemon response ID mismatch"))
     if "error" in response:
         error = response["error"]
-        code = error.get("code", "AGENTSEAT_ERROR")
+        details = error.get("data", {})
+        code = details.get("kind", error.get("code", "AGENTSEAT_ERROR"))
         message = error.get("message", _("AgentSeat daemon rejected the request"))
         raise AgentSeatError(f"{code}: {message}")
     return response.get("result")
@@ -527,13 +848,24 @@ def wait_for(predicate: Any, timeout: float, message: str) -> Any:
     raise AgentSeatError(message)
 
 
+def startup_window() -> dict[str, Any] | None:
+    # The first mapped surface may be a splash or an application-owned popup.
+    # Wait for the micro-host's real focus decision instead of forcing focus on
+    # whichever window was enumerated first.
+    candidates = [window for window in rpc("window.list")
+                  if window.get("focused") and not window.get("popup")
+                  and window.get("mapped") and not window.get("hidden")]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def agent_daemon_pids() -> list[int]:
     result: list[int] = []
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
-        if proc_exe(int(entry.name)).removesuffix(" (deleted)") == str(NATIVE_DAEMON):
-            result.append(int(entry.name))
+        pid = int(entry.name)
+        if daemon_belongs_to_runtime(pid):
+            result.append(pid)
     return result
 
 
@@ -546,16 +878,50 @@ def normalize_argv(values: list[str]) -> list[str]:
     return argv
 
 
-def normalized_cwd(value: str | None) -> str | None:
-    if value is None:
-        return None
-    path = Path(value).expanduser().resolve()
+def normalized_cwd(value: str | None) -> str:
+    path = Path.cwd() if value is None else Path(value).expanduser()
+    path = path.resolve()
     if not path.is_dir():
         raise AgentSeatError(_("working directory does not exist: {path}").format(path=path))
     return str(path)
 
 
-def write_launch_spec(argv: list[str], mode: str, cwd: str | None) -> None:
+INPUT_ENVIRONMENT_NAMES = ('GTK_IM_MODULE', 'QT_IM_MODULE', 'QT_IM_MODULES', 'XMODIFIERS', 'XCOMPOSEFILE', 'XCOMPOSECACHE', 'IBUS_ADDRESS', 'IBUS_ADDRESS_FILE', 'IBUS_USE_PORTAL', 'DBUS_SESSION_BUS_ADDRESS', 'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE', 'XKB_DEFAULT_RULES', 'XKB_DEFAULT_MODEL', 'XKB_DEFAULT_LAYOUT', 'XKB_DEFAULT_VARIANT', 'XKB_DEFAULT_OPTIONS')
+
+
+def capture_input_environment() -> dict[str, str | None]:
+    # hyprctl exec inherits the compositor's launch-time environment. Carry
+    # this caller's current input settings through the private launch file.
+    values = {name: os.environ.get(name) for name in INPUT_ENVIRONMENT_NAMES}
+    modules = (values.get("GTK_IM_MODULE"), values.get("QT_IM_MODULE"), values.get("XMODIFIERS"))
+    if any(value in {"ibus", "@im=ibus"} for value in modules):
+        # GTK accepts IBUS_ADDRESS; Qt's IBus module discovers the original
+        # daemon through its address file. Resolve both before changing DISPLAY.
+        try:
+            result = subprocess.run(["/usr/bin/python3", "-c",
+                "import gi,json; gi.require_version('IBus','1.0'); from gi.repository import IBus; "
+                "print(json.dumps({'IBUS_ADDRESS':IBus.get_address(),'IBUS_ADDRESS_FILE':IBus.get_socket_path()}))"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, timeout=2, check=False)
+            endpoints = json.loads(result.stdout) if result.returncode == 0 else {}
+            for name in ("IBUS_ADDRESS", "IBUS_ADDRESS_FILE"):
+                value = endpoints.get(name)
+                if not values.get(name) and isinstance(value, str) and value and len(value) <= 4096:
+                    values[name] = value
+        except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+            pass
+    return values
+
+
+def write_launch_spec(
+    argv: list[str],
+    mode: str,
+    cwd: str,
+    *,
+    private_dbus: bool = False,
+    a11y: bool = False,
+    ime: str = "simple",
+) -> None:
     if mode not in {"wayland", "x11"}:
         raise AgentSeatError(_("unsupported display mode: {mode}").format(mode=mode))
     payload = {
@@ -563,11 +929,17 @@ def write_launch_spec(argv: list[str], mode: str, cwd: str | None) -> None:
         "argv": argv,
         "mode": mode,
         "cwd": cwd,
+        "private_dbus": private_dbus,
+        "input_environment": capture_input_environment(),
     }
-    temporary = LAUNCH_SPEC.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
-    os.chmod(temporary, 0o600)
-    temporary.replace(LAUNCH_SPEC)
+    if a11y:
+        payload["a11y"] = True
+    if ime != "simple":
+        payload["ime"] = ime
+    atomic_write_private_text(
+        LAUNCH_SPEC,
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+    )
 
 
 def load_application_env() -> dict[str, str] | None:
@@ -585,60 +957,25 @@ def load_application_env() -> dict[str, str] | None:
     }
 
 
-def load_application_fit() -> dict[str, int] | None:
-    try:
-        value = json.loads(APPLICATION_FIT.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return None
-    keys = ("logical_width", "logical_height", "buffer_width", "buffer_height")
-    if any(not isinstance(value.get(key), int) or value[key] <= 0 for key in keys):
-        return None
-    return {key: int(value[key]) for key in keys}
-
-
-def resize_outer_to_fit(
-    host_signature: str,
-    microhost: int,
-    outer_window: str,
-    application_fit: dict[str, int],
-) -> dict[str, Any]:
-    desired_size = [application_fit["logical_width"], application_fit["logical_height"]]
-    outer = host_client_for_pid(host_signature, microhost)
-    if outer and list(outer.get("size", [])) == desired_size:
-        return outer
-    run([
-        "hyprctl", "--instance", host_signature, "dispatch", "resizewindowpixel",
-        f"exact {desired_size[0]} {desired_size[1]},address:{outer_window}",
-    ])
-    return wait_for(
-        lambda: (
-            candidate
-            if (candidate := host_client_for_pid(host_signature, microhost))
-            and list(candidate.get("size", [])) == desired_size
-            else None
-        ),
-        3,
-        _("outer AgentSeat window did not adopt the application size"),
-    )
-
-
-def reconcile_outer_size(state_value: dict[str, Any] | None = None) -> dict[str, Any]:
+def refresh_outer_geometry(state_value: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Read geometry reported by the private compositor; never query or write host geometry."""
     current = dict(state_value if state_value is not None else load_state())
-    application_fit = load_application_fit()
-    if not current or not application_fit:
+    if not current:
         return current
-    signature = current.get("host_instance")
-    outer_window = current.get("outer_window")
-    microhost = microhost_pid()
-    if not isinstance(signature, str) or not isinstance(outer_window, str) or not microhost:
+    geometry = rpc("session.heartbeat").get("output")
+    if not geometry:
         return current
-    outer = resize_outer_to_fit(signature, microhost, outer_window, application_fit)
-    logical_size = list(outer.get("size", [application_fit["logical_width"], application_fit["logical_height"]]))
-    buffer_size = [application_fit["buffer_width"], application_fit["buffer_height"]]
-    if current.get("viewport_logical_size") != logical_size or current.get("physical_buffer_size") != buffer_size:
-        current["viewport_logical_size"] = logical_size
-        current["physical_buffer_size"] = buffer_size
-        save_state(current)
+    current["application_coordinate_size"] = [geometry["width"], geometry["height"]]
+    if current.get("launch", {}).get("mode") == "x11":
+        host_scale = float(current.get("host_output_scale", 1.0))
+        current["viewport_logical_size"] = [
+            round(geometry[key] / host_scale) for key in ("pixel_width", "pixel_height")
+        ]
+    else:
+        current["viewport_logical_size"] = [geometry["width"], geometry["height"]]
+    current["physical_buffer_size"] = [geometry["pixel_width"], geometry["pixel_height"]]
+    current["render_scale"] = geometry["scale"]
+    current["geometry_version"] = geometry["geometry_version"]
     return current
 
 
@@ -649,36 +986,40 @@ def legacy_command(preset: str) -> tuple[list[str], str, str | None]:
 
 
 def sync_window_tree(*, focus_newest: bool = True) -> list[dict[str, Any]]:
-    """Lazily include every mapped window in the wrapped app's private workspace."""
-    reconcile_outer_size()
-    windows = rpc("window.list")
-    added: list[dict[str, Any]] = []
-    for window in windows:
-        if window.get("leased"):
-            continue
-        rpc("window.lease", {"window_id": str(window["id"])})
-        added.append(window)
-    if focus_newest and added:
-        rpc("window.focus", {"window_id": str(added[-1]["id"])})
-    return rpc("window.list") if added else windows
+    """Read the compositor's mapped application windows without implicit writes."""
+    return rpc("window.list")
 
 
 def start_application(
     argv: list[str],
     *,
     mode: str,
-    cwd: str | None,
+    cwd: str,
     host_workspace: int = 1,
     legacy_preset: str | None = None,
     compat_type: str | None = None,
+    private_dbus: bool = False,
+    a11y: bool = False,
+    ime: str = "simple",
 ) -> dict[str, Any]:
     existing = microhost_pid()
     if existing and CONTROL_SOCKET.exists():
         current = load_state()
-        current_argv = current.get("launch", {}).get("argv")
+        current_launch = current.get("launch", {})
+        requested_launch = {
+            "argv": argv,
+            "mode": mode,
+            "cwd": cwd,
+            "private_dbus": private_dbus,
+            "a11y": a11y,
+            "ime": ime,
+        }
         if legacy_preset and current.get("preset") == legacy_preset:
             return status()
-        if current_argv == argv:
+        if all(
+            current_launch.get(key, "simple" if key == "ime" else False if key in {"private_dbus", "a11y"} else None) == value
+            for key, value in requested_launch.items()
+        ):
             return status()
         raise AgentSeatError(
             _("AgentSeat is already running another application; stop it before launching a different command")
@@ -697,15 +1038,15 @@ def start_application(
     )
     launch_properties = launch_window_properties(host_workspace, before.get("workspace"))
     ensure_runtime_storage()
-    for stale in (MICROHOST_PID, EYE_PID, APPLICATION_ENV, APPLICATION_FIT, MICROHOST_READY):
+    for stale in (MICROHOST_PID, EYE_PID, APPLICATION_ENV, MICROHOST_READY):
         try:
             stale.unlink()
         except FileNotFoundError:
             pass
-    write_launch_spec(argv, mode, cwd)
+    write_launch_spec(argv, mode, cwd, private_dbus=private_dbus, **({"a11y": True} if a11y else {}), **({"ime": ime} if ime != "simple" else {}))
     run([
         "hyprctl", "--instance", str(host["instance"]), "dispatch", "exec",
-        f"{launch_properties} env AGENTSEAT_HOST_SCALE={host_scale:.6g} AGENTSEAT_PHYSICAL_LAYOUT=1 {RUN_MICROHOST}",
+        microhost_launch_command(launch_properties, host_scale, mode, application_hud_position_file(argv, cwd)),
     ])
     microhost = wait_for(microhost_pid, 12, _("AgentSeat micro-host did not appear"))
     outer = wait_for(
@@ -723,25 +1064,10 @@ def start_application(
         raise AgentSeatError(
             _("native AgentSeat daemon is missing or not executable: {path}").format(path=NATIVE_DAEMON)
         )
-    if not GRIM.is_file() or not os.access(GRIM, os.X_OK):
-        raise AgentSeatError(
-            _("native wlr-screencopy client is missing or not executable: {path}").format(path=GRIM)
-        )
     app_environment = wait_for(
         load_application_env, 8, _("AgentSeat application environment receipt did not appear")
     )
     wait_for(MICROHOST_READY.exists, 12, _("application did not map in the AgentSeat micro-host"))
-    application_fit = wait_for(
-        load_application_fit,
-        3,
-        _("application size did not settle in the AgentSeat micro-host"),
-    )
-    outer = resize_outer_to_fit(
-        str(host["instance"]),
-        int(microhost),
-        str(outer["address"]),
-        application_fit,
-    )
     daemon_log = open_private_log(LOG_DIR / "daemon.log")
     env = dict(os.environ)
     env.update({
@@ -751,7 +1077,10 @@ def start_application(
     })
     if CURRENT_LOCALE_DIR:
         env["AGENTSEAT_LOCALE_DIR"] = str(CURRENT_LOCALE_DIR)
+    global RPC_SESSION_ID, RPC_CONTROL_EPOCH
     session_id = uuid.uuid4().hex
+    RPC_SESSION_ID = session_id
+    RPC_CONTROL_EPOCH = None
     daemon_argv = [
         str(NATIVE_DAEMON),
         "--socket", str(CONTROL_SOCKET),
@@ -778,10 +1107,9 @@ def start_application(
     )
     wait_for(CONTROL_SOCKET.exists, 8, _("AgentSeat daemon socket did not appear"))
     rpc("seat.create", {"workspace": host_workspace})
-    windows = wait_for(lambda: rpc("window.list") or None, 8, _("application window did not appear"))
-    window = windows[0]
+    window = wait_for(startup_window, 12, _("application window did not appear"))
     rpc("window.lease", {"window_id": str(window["id"])})
-    rpc("window.focus", {"window_id": str(window["id"])})
+    release_write_control()
 
     after = host_snapshot(host)
     relation = host_focus_relation(before, after, str(outer["address"]))
@@ -800,19 +1128,30 @@ def start_application(
             )
         )
     state_value = {
+        "instance": SELECTED_INSTANCE or "default",
         "session_id": session_id,
-        "launch": {"argv": argv, "mode": mode, "cwd": cwd},
+        "launch": {
+            "argv": argv,
+            "mode": mode,
+            "cwd": cwd,
+            "private_dbus": private_dbus,
+            "a11y": a11y,
+            "ime": ime,
+        },
         "host_instance": host["instance"],
         "backend": "cage-microhost",
         "microhost_pid": microhost,
         "outer_window": outer["address"],
         "host_workspace": host_workspace,
         "host_output_scale": host_scale,
-        "buffer_scale": 1,
-        "render_scale": 1,
+        "buffer_scale": host_scale,
+        "render_scale": host_scale,
         "physical_pixel_layout": True,
         "viewport_logical_size": list(outer.get("size", [1280, 720])),
-        "physical_buffer_size": [application_fit["buffer_width"], application_fit["buffer_height"]],
+        "physical_buffer_size": [
+            physical_size_for_host(int(value), host_scale)
+            for value in outer.get("size", [1280, 720])
+        ],
         "wayland_display": app_environment["wayland_display"],
         "x_display": app_environment["display"],
         "daemon_pid": daemon.pid,
@@ -837,14 +1176,17 @@ def start_application(
 
 
 def start_safely(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    try:
-        return start_application(*args, **kwargs)
-    except Exception:
+    with lifecycle_lock():
+        preexisting_session = bool(microhost_pid() or agent_daemon_pids())
         try:
-            stop()
-        except Exception:
-            pass
-        raise
+            return start_application(*args, **kwargs)
+        except Exception as exc:
+            if not preexisting_session:
+                try:
+                    _stop_unlocked()
+                except (AgentSeatError, OSError, TypeError, ValueError) as cleanup_error:
+                    exc.add_note(f"AgentSeat launch cleanup also failed: {cleanup_error}")
+            raise
 
 
 def status() -> dict[str, Any]:
@@ -852,8 +1194,8 @@ def status() -> dict[str, Any]:
     microhost = microhost_pid()
     live = bool(microhost and CONTROL_SOCKET.exists())
     if live:
-        state_value = reconcile_outer_size(state_value)
-    result: dict[str, Any] = {"protocol_version": 1, "running": live, "state": state_value}
+        state_value = refresh_outer_geometry(state_value)
+    result: dict[str, Any] = {"protocol_version": 2, "running": live, "state": state_value}
     result["eye_hud"] = {
         "running": eye_pid() is not None,
         "pid": eye_pid(),
@@ -865,6 +1207,7 @@ def status() -> dict[str, Any]:
         windows = sync_window_tree()
         result["seat"] = rpc("seat.status")
         result["windows"] = windows
+        result["application_state"] = "windowed" if windows else "background"
         host = host_instance()
         result["host_now"] = host_snapshot(host)
         matches_start = same_host_focus(state_value.get("host_snapshot", {}), result["host_now"])
@@ -879,7 +1222,7 @@ def session_heartbeat(expected_session_id: str | None = None) -> dict[str, Any]:
     microhost = microhost_pid()
     if not microhost or not CONTROL_SOCKET.exists():
         raise AgentSeatError(_("AgentSeat is not running"))
-    state_value = reconcile_outer_size(state_value)
+    state_value = refresh_outer_geometry(state_value)
     daemon = rpc("session.heartbeat")
     session_id = daemon.get("session_id") if isinstance(daemon, dict) else None
     if not isinstance(session_id, str) or not session_id:
@@ -904,7 +1247,7 @@ def session_heartbeat(expected_session_id: str | None = None) -> dict[str, Any]:
     if persisted_daemon_pid is not None and daemon_pid != persisted_daemon_pid:
         raise AgentSeatError(_("AgentSeat runtime state does not match the connected daemon"))
     windows = rpc("window.list") if daemon.get("seat_created") else []
-    healthy = bool(daemon.get("seat_created") and windows)
+    healthy = bool(daemon.get("seat_created"))
     if not healthy:
         raise AgentSeatError(_("AgentSeat session has no usable application window"))
     return {
@@ -914,6 +1257,8 @@ def session_heartbeat(expected_session_id: str | None = None) -> dict[str, Any]:
         "connection": "fresh-unix-socket-per-request",
         "microhost_pid": microhost,
         "application_windows": len(windows),
+        "application_state": "windowed" if windows else "background",
+        "window_ready": bool(windows),
         "state_matches_daemon": True,
         "daemon": daemon,
     }
@@ -945,6 +1290,8 @@ def watch_session(*, interval: float, count: int, expected_session_id: str | Non
             "daemon_pid": daemon.get("daemon_pid"),
             "microhost_pid": heartbeat["microhost_pid"],
             "application_windows": heartbeat["application_windows"],
+            "application_state": heartbeat.get("application_state", "windowed" if heartbeat["application_windows"] else "background"),
+            "window_ready": heartbeat.get("window_ready", bool(heartbeat["application_windows"])),
             "seat_paused": daemon.get("seat_paused"),
             "agent_allowed": collaboration.get("agent_allowed"),
             "human_active": collaboration.get("human_active"),
@@ -981,7 +1328,11 @@ def start_hud() -> dict[str, Any]:
         # GL renderer loads a full software-GL stack inside the pixman
         # micro-host for no visual benefit.
         "GSK_RENDERER": "cairo",
+        "AGENTSEAT_SESSION_ID": str(state_value.get("session_id", "")),
         "AGENTSEAT_LANGUAGE": CURRENT_LANGUAGE,
+        # Only the owned HUD needs logical sizing in the physical X11 scene.
+        "AGENTSEAT_HUD_SCALE": str(state_value.get("host_output_scale", 1.0)
+            if state_value.get("launch", {}).get("mode") == "x11" else 1.0),
     })
     if CURRENT_LOCALE_DIR:
         environment["AGENTSEAT_LOCALE_DIR"] = str(CURRENT_LOCALE_DIR)
@@ -1028,12 +1379,22 @@ def stop_hud() -> dict[str, Any]:
     return {"running": False}
 
 
-def stop() -> dict[str, Any]:
+def _stop_unlocked() -> dict[str, Any]:
     state_value = load_state()
+    # Keep the verified PID before asking the daemon to shut down. The daemon or
+    # application can remove the runtime PID file before the outer micro-host has
+    # actually exited; re-reading only the file would then orphan the host window.
+    owned_microhost = microhost_pid()
+    if not owned_microhost and state_value.get("microhost_pid"):
+        persisted_microhost = int(state_value["microhost_pid"])
+        if microhost_belongs_to_runtime(persisted_microhost):
+            owned_microhost = persisted_microhost
     stop_hud()
     daemon_pids = set(agent_daemon_pids())
     if state_value.get("daemon_pid"):
-        daemon_pids.add(int(state_value["daemon_pid"]))
+        persisted_daemon_pid = int(state_value["daemon_pid"])
+        if daemon_belongs_to_runtime(persisted_daemon_pid):
+            daemon_pids.add(persisted_daemon_pid)
     if CONTROL_SOCKET.exists():
         try:
             rpc("shutdown")
@@ -1053,18 +1414,21 @@ def stop() -> dict[str, Any]:
                     _("refusing to remove an unexpected AgentSeat socket: {path}").format(path=socket_path)
                 )
             socket_path.unlink()
-    microhost = microhost_pid()
-    if microhost:
+    if owned_microhost and microhost_belongs_to_runtime(owned_microhost):
         try:
-            os.kill(microhost, 15)
+            os.kill(owned_microhost, signal.SIGTERM)
         except ProcessLookupError:
             pass
-        wait_for(lambda: microhost_pid() is None, 8, _("AgentSeat micro-host did not stop"))
+        wait_for(
+            lambda: not microhost_belongs_to_runtime(owned_microhost),
+            8,
+            _("AgentSeat micro-host did not stop"),
+        )
     try:
         STATE.unlink()
     except FileNotFoundError:
         pass
-    for transient in (LAUNCH_SPEC, APPLICATION_ENV, APPLICATION_FIT, MICROHOST_PID, MICROHOST_READY, EYE_PID):
+    for transient in (LAUNCH_SPEC, APPLICATION_ENV, MICROHOST_PID, MICROHOST_READY, EYE_PID):
         try:
             transient.unlink()
         except FileNotFoundError:
@@ -1072,13 +1436,117 @@ def stop() -> dict[str, Any]:
     return {"stopped": True}
 
 
-def pointer_click(button: int) -> list[Any]:
+def stop() -> dict[str, Any]:
+    with lifecycle_lock():
+        return _stop_unlocked()
+
+
+def release_write_control() -> dict[str, Any]:
+    global RPC_WRITE_LEASE, RPC_CONTROL_EPOCH
+    lease = RPC_WRITE_LEASE or rpc("control.status")
+    if lease.get("controller_id") != RPC_CONTROLLER_ID or not lease.get("lease_id"):
+        return {"released": False}
+    result = rpc("control.release", {"lease_id": lease["lease_id"]})
+    RPC_WRITE_LEASE = None
+    RPC_CONTROL_EPOCH = None
+    return result
+
+
+def pause_seat() -> dict[str, Any]:
+    result = rpc("seat.pause")
+    deadline = time.monotonic() + 3
+    while True:
+        heartbeat = rpc("session.heartbeat")
+        if heartbeat.get("session_id") != RPC_SESSION_ID:
+            raise AgentSeatError("SESSION_MISMATCH: session changed while waiting for pause")
+        if "gate_epoch" not in heartbeat:
+            return result  # Existing v1 sessions have no final-delivery acknowledgement.
+        if not heartbeat["gate_allowed"] and heartbeat["gate_epoch"] >= heartbeat["control_epoch"]:
+            return {**result, "compositor_acknowledged": True}
+        if time.monotonic() >= deadline:
+            raise AgentSeatError("PAUSE_UNCONFIRMED: compositor has not acknowledged the input gate")
+        time.sleep(0.01)
+
+
+def window_action(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    result = rpc(method, params)
+    if "operation_id" not in result:
+        return result
+    operation_id = result["operation_id"]
+    deadline = time.monotonic() + 4
+    while result.get("execution") == "running" and time.monotonic() < deadline:
+        time.sleep(.01)
+        result = rpc("operation.get", {"operation_id": operation_id})
+    if result.get("execution") != "finished":
+        raise AgentSeatError(f"WINDOW_CHANGE_UNCONFIRMED: operation_id={operation_id}; {result.get('execution')}")
+    return result
+
+
+def pointer_click(button: int) -> Any:
     sync_window_tree()
-    params = {"button": button, "pressed": True}
-    pressed = rpc("pointer.button", params)
-    params["pressed"] = False
-    released = rpc("pointer.button", params)
-    return [pressed, released]
+    return rpc("pointer.click", {"button": button})
+
+
+def resolve_ime(choice: str, private_dbus: bool = False) -> str:
+    if choice == "desktop" and private_dbus:
+        raise AgentSeatError("--ime desktop requires the desktop session bus; use --ime fcitx5 with --private-dbus")
+    if choice != "auto":
+        return choice
+    # Attach only a service selected by the caller, including mixed toolkit
+    # choices. A running daemon alone is not the user's engine preference.
+    modules = [os.environ.get(name, "") for name in ("GTK_IM_MODULE", "QT_IM_MODULE", "XMODIFIERS")]
+    modules.extend(os.environ.get("QT_IM_MODULES", "").split(";"))
+    if not any(value in {"fcitx", "fcitx5", "@im=fcitx"} for value in modules):
+        return "inherit"
+    remote = Path("/usr/bin/fcitx5-remote")
+    if not remote.is_file() or not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        return "inherit"
+    try:
+        probe = subprocess.run([str(remote), "--check"], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return "inherit"
+    return ("fcitx5" if private_dbus else "desktop") if probe.returncode == 0 else "inherit"
+
+
+def type_text(text: str) -> dict[str, Any]:
+    if load_state().get("launch", {}).get("ime") in {"fcitx5", "desktop", "inherit"}:
+        return private_unicode_paste(text)
+    result = rpc("keyboard.type", {"text": text})
+    # A pre-upgrade daemon returns the legacy synchronous result.
+    if "operation_id" not in result:
+        return result
+    operation_id = result["operation_id"]
+    origin = {key: result[key] for key in ("request_id", "request_controller_id") if key in result}
+    deadline = time.monotonic() + 185
+    renew_at = time.monotonic() + 2
+    try:
+        while result.get("execution") == "running":
+            if time.monotonic() >= deadline:
+                raise AgentSeatError("OPERATION_TIMEOUT: query the operation before any retry")
+            time.sleep(0.025)
+            if RPC_WRITE_LEASE and time.monotonic() >= renew_at:
+                rpc("control.renew", {"lease_id": RPC_WRITE_LEASE["lease_id"], "ttl_ms": 10000})
+                renew_at = time.monotonic() + 2
+            result = rpc("operation.get", {"operation_id": operation_id})
+    except (KeyboardInterrupt, AgentSeatError) as exc:
+        try:
+            rpc("operation.cancel", {"operation_id": operation_id})
+        except AgentSeatError:
+            pass
+        if isinstance(exc, AgentSeatError):
+            raise AgentSeatError(
+                f"OPERATION_UNCONFIRMED: operation_id={operation_id}; {exc}; "
+                "observe before continuing"
+            ) from exc
+        raise
+    if result.get("execution") != "finished":
+        raise AgentSeatError(
+            f"INPUT_INTERRUPTED: {result.get('execution')}; "
+            f"submitted={result.get('submitted')}/{result.get('total')}; "
+            f"operation_id={operation_id}; observe before continuing"
+        )
+    return {**result, **origin, "typed": result["submitted"]}
 
 
 def pointer_move(x: float, y: float) -> Any:
@@ -1162,69 +1630,19 @@ def onlyoffice_paste(text: str) -> dict[str, Any]:
 
 
 def private_unicode_paste(text: str) -> dict[str, Any]:
-    """Paste through the micro-host clipboard without exposing host clipboard state."""
-    state_value = load_state()
-    wayland_display = state_value.get("wayland_display")
-    if not isinstance(wayland_display, str) or not wayland_display:
-        raise AgentSeatError(_("private Wayland display is unavailable"))
-    for helper in (WL_COPY, WL_PASTE):
-        if not helper.is_file() or not os.access(helper, os.X_OK):
-            raise AgentSeatError(
-                _("private Unicode clipboard helper is unavailable: {path}").format(path=helper)
-            )
-
-    environment = dict(os.environ)
-    environment["XDG_RUNTIME_DIR"] = str(USER_RUNTIME_DIR)
-    environment["WAYLAND_DISPLAY"] = wayland_display
-    environment.pop("DISPLAY", None)
-    owner = subprocess.Popen(
-        [str(WL_COPY), "--foreground", "--paste-once", "--type", "text/plain;charset=utf-8"],
-        env=environment,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        if owner.stdin is None:
-            raise AgentSeatError(_("private clipboard input pipe is unavailable"))
-        owner.stdin.write(text)
-        owner.stdin.close()
-
-        def clipboard_ready() -> bool:
-            if owner.poll() is not None:
-                return False
-            probe = run([str(WL_PASTE), "--list-types"], env=environment, check=False)
-            return probe.returncode == 0 and "text/plain" in probe.stdout
-
-        wait_for(clipboard_ready, 2, _("private AgentSeat clipboard did not become ready"))
-        # evdev KEY_LEFTCTRL=29 and KEY_V=47. These events are delivered only
-        # through the micro-host virtual keyboard, never through the host seat.
-        rpc("keyboard.key", {"keycode": 29, "pressed": True})
-        rpc("keyboard.key", {"keycode": 47, "pressed": True})
-        rpc("keyboard.key", {"keycode": 47, "pressed": False})
-        rpc("keyboard.key", {"keycode": 29, "pressed": False})
-        try:
-            returncode = owner.wait(timeout=3)
-        except subprocess.TimeoutExpired as exc:
-            raise AgentSeatError(_("application did not request the private AgentSeat clipboard")) from exc
-        if returncode != 0:
-            error = owner.stderr.read().strip() if owner.stderr else ""
-            raise AgentSeatError(error or _("private AgentSeat clipboard transfer failed"))
-    finally:
-        for keycode in (47, 29):
-            try:
-                rpc("keyboard.key", {"keycode": keycode, "pressed": False})
-            except AgentSeatError:
-                pass
-        if owner.poll() is None:
-            owner.terminate()
-            try:
-                owner.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                owner.kill()
-                owner.wait(timeout=1)
-    return {"typed": len(text), "lane": "private-wayland-clipboard", "host_clipboard": "untouched"}
+    """Native, lease-guarded paste; receipt confirms transport only."""
+    result = rpc("keyboard.paste", {"text": text})
+    operation_id = result["operation_id"]
+    origin = {k: result[k] for k in ("request_id", "request_controller_id") if k in result}
+    deadline = time.monotonic() + 7
+    while result.get("execution") == "running":
+        if time.monotonic() >= deadline:
+            raise AgentSeatError(f"OPERATION_UNCONFIRMED: {operation_id}; observe before any retry")
+        time.sleep(0.025)
+        result = rpc("operation.get", {"operation_id": operation_id})
+    if result.get("execution") != "finished":
+        raise AgentSeatError(f"INPUT_INTERRUPTED: {result}; observe before any retry")
+    return {**result, **origin, "lane": "private-wayland-clipboard"}
 
 
 def safe_capture_path(path: Path) -> Path:
@@ -1256,58 +1674,117 @@ def observe(path: str | None) -> dict[str, Any]:
     ensure_private_directory(EVIDENCE)
     output = safe_capture_path(Path(path) if path else EVIDENCE / f"agentseat-{int(time.time())}.png")
     temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp.png")
-    capture_env = {
-        **os.environ,
-        "XDG_RUNTIME_DIR": str(USER_RUNTIME_DIR),
-        "WAYLAND_DISPLAY": str(state_value["wayland_display"]),
-    }
-
-    def capture_pass() -> None:
-        host_pid = microhost_pid()
-        if not host_pid:
-            raise AgentSeatError(_("AgentSeat micro-host exited before capture"))
-        process = subprocess.Popen(
-            [str(GRIM), "-t", "png", str(temporary)],
-            env=capture_env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        try:
-            time.sleep(0.03)
-            os.kill(host_pid, signal.SIGUSR1)
-            stdout, stderr = process.communicate(timeout=5)
-        except (ProcessLookupError, subprocess.TimeoutExpired) as exc:
-            process.terminate()
-            process.communicate(timeout=2)
-            raise AgentSeatError(_("micro-host screencopy did not complete: {error}").format(error=exc)) from exc
-        if process.returncode:
-            raise AgentSeatError(stderr.strip() or stdout.strip() or _("native wlr-screencopy failed"))
-
+    frame = rpc("capture.submit")
+    deadline = time.monotonic() + 5
+    while frame["status"] in {"pending", "encoding"}:
+        if time.monotonic() >= deadline:
+            raise AgentSeatError("FRAME_UNCONFIRMED: capture receipt remains pending")
+        time.sleep(0.01)
+        frame = rpc("capture.get", {"frame_id": frame["frame_id"]})
+    if frame["status"] != "finished":
+        raise AgentSeatError(f"CAPTURE_FAILED: {frame.get('error')}")
     try:
-        # An inactive host workspace can throttle the nested client's frame
-        # callbacks. Drive enough private output frames to settle the HUD's
-        # 210 ms reveal before retaining the final application capture.
-        for pass_index in range(4):
-            capture_pass()
-            if pass_index < 3:
-                time.sleep(0.08)
+        source = Path(frame["path"])
+        if source.parent != CONTROL_SOCKET.parent or source.is_symlink():
+            raise AgentSeatError("invalid private frame location")
+        with source.open("rb") as incoming, temporary.open("xb") as outgoing:
+            os.chmod(temporary, 0o600)
+            shutil.copyfileobj(incoming, outgoing)
         temporary.replace(output)
-        os.chmod(output, 0o600)
     finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        temporary.unlink(missing_ok=True)
     return {
-        "path": str(output),
-        "backend": "wlr-screencopy",
-        "window": window,
-        "capture": {"backend": "native-wlr-screencopy", "scope": "single-app-output"},
-        "capture_passes": 4,
-        "settle_ms": 240,
+        "path": str(output), "backend": "wlr-screencopy", "window": window,
+        "capture": {"backend": "native-wlr-screencopy", "scope": "single-app-output", **frame},
+        "capture_passes": 1, "settle_ms": 0,
     }
+
+
+def a11y_read(action: str, **params: Any) -> Any:
+    state_value = load_state()
+    if not state_value.get("launch", {}).get("a11y"):
+        raise AgentSeatError("A11Y_DISABLED: launch this application with --a11y")
+    try:
+        receipt = json.loads((RUNTIME / "a11y.json").read_text())
+        pid = int(receipt["bridge_pid"])
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        if fields[19] != receipt["bridge_start"]:
+            raise AgentSeatError("A11Y_SCOPE_STALE")
+        cursor = pid
+        for _ in range(32):
+            if cursor == microhost_pid():
+                break
+            cursor = int(Path(f"/proc/{cursor}/stat").read_text().rsplit(")", 1)[1].split()[1])
+            if cursor <= 1:
+                raise AgentSeatError("A11Y_SCOPE_OUTSIDE_APPLICATION")
+        else:
+            raise AgentSeatError("A11Y_SCOPE_OUTSIDE_APPLICATION")
+        if receipt["socket"] != str(RUNTIME / "a11y.sock"):
+            raise AgentSeatError("A11Y_SOCKET_MISMATCH")
+        method = action if action.startswith(("events.", "wait.")) else f"a11y.{action}"
+        expected_scope = params.pop("expect_scope", EXPECTED_A11Y_SCOPE)
+        if expected_scope is not None and expected_scope != receipt["scope_id"]:
+            raise AgentSeatError("A11Y_SCOPE_CHANGED")
+        request = {**params, "scope_id": receipt["scope_id"], "method": method}
+        if "value" in request:
+            request["node_ref" if action in {"get", "text", "text_state"} else "query"] = request.pop("value")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(4)
+            client.connect(receipt["socket"])
+            peer_pid, peer_uid, _ = struct.unpack("3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if peer_pid != pid or peer_uid != os.getuid():
+                raise AgentSeatError("A11Y_BRIDGE_PEER_MISMATCH")
+            client.sendall((json.dumps(request) + "\n").encode())
+            data = bytearray()
+            while b"\n" not in data:
+                chunk = client.recv(65536)
+                if not chunk or len(data) + len(chunk) > RPC_LIMIT:
+                    raise AgentSeatError("A11Y_RESPONSE_INVALID")
+                data.extend(chunk)
+        response = json.loads(data.split(b"\n")[0])
+        if "error" in response:
+            raise AgentSeatError(response["error"]["kind"])
+        return response["result"]
+    except (OSError, KeyError, ValueError) as error:
+        raise AgentSeatError(f"A11Y_UNAVAILABLE: {error}") from error
+
+
+def semantic_action(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    result = rpc(method, params)
+    origin = {key: result[key] for key in ("request_id", "request_controller_id") if key in result}
+    operation_id = result["operation_id"]
+    deadline, renew_at = time.monotonic() + 16, time.monotonic() + 2
+    try:
+        while result.get("execution") == "running":
+            if time.monotonic() >= deadline:
+                raise AgentSeatError(f"OPERATION_UNCONFIRMED: query {operation_id} before attempting another action")
+            time.sleep(.02)
+            result = rpc("operation.get", {"operation_id": operation_id})
+            if RPC_WRITE_LEASE and result.get("execution") == "running" and time.monotonic() >= renew_at:
+                rpc("control.renew", {"lease_id": RPC_WRITE_LEASE["lease_id"], "ttl_ms": 10000})
+                renew_at = time.monotonic() + 2
+    except (KeyboardInterrupt, AgentSeatError):
+        try: rpc("operation.cancel", {"operation_id": operation_id})
+        except AgentSeatError: pass
+        raise
+    return {**result, **origin}
+
+
+def semantic_wait(condition: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
+    result = a11y_read("wait.start", condition=condition, timeout_ms=timeout_ms)
+    wait_id = result["wait_id"]
+    deadline = time.monotonic() + timeout_ms / 1000 + 4
+    try:
+        while result["status"] == "pending":
+            if time.monotonic() >= deadline:
+                raise AgentSeatError("WAIT_UNCONFIRMED")
+            time.sleep(.05)
+            result = a11y_read("wait.get", wait_id=wait_id)
+    except (KeyboardInterrupt, AgentSeatError):
+        try: a11y_read("wait.cancel", wait_id=wait_id)
+        except AgentSeatError: pass
+        raise
+    return result
 
 
 def collaboration_status() -> dict[str, Any]:
@@ -1327,6 +1804,7 @@ def reply_message(text: str) -> dict[str, Any]:
 
 
 def main() -> int:
+    global RPC_CONTROLLER_ID, EXPECTED_A11Y_SCOPE
     global PREFERENCES
     cli_language = language_override(sys.argv[1:])
     configure_i18n(cli_language or os.environ.get("AGENTSEAT_LANGUAGE", "auto"))
@@ -1347,7 +1825,27 @@ def main() -> int:
         metavar="LANG",
         help=_("interface language: auto, en, zh-CN, or zh-TW"),
     )
+    parser.add_argument(
+        "--instance",
+        type=normalize_instance_id,
+        metavar="ID",
+        help=_("operate one named AgentSeat application instance"),
+    )
+    parser.add_argument("--controller", help="stable identity for this application's write controller")
     commands = parser.add_subparsers(dest="command", required=True)
+    control_parser = commands.add_parser("control", help="inspect, acquire or release the application write lease")
+    control_parser.add_argument("action", choices=("status", "acquire", "release"), nargs="?", default="status")
+    window_parser = commands.add_parser("window", help="change a real application window")
+    window_commands = window_parser.add_subparsers(dest="action", required=True)
+    for action_name, parameters in (("focus", ()), ("close", ()), ("move", ("x", "y")), ("resize", ("width", "height"))):
+        action_parser = window_commands.add_parser(action_name)
+        action_parser.add_argument("window_id")
+        for name in parameters:
+            action_parser.add_argument(name, type=int)
+    request_parser = commands.add_parser("receipt", help="read a retained write receipt without replaying it")
+    request_parser.add_argument("request_id", type=int)
+    request_parser.add_argument("--owner", help="controller identity that submitted the request")
+
     start_parser = commands.add_parser("start", help=_("start a legacy verified demo"))
     start_parser.add_argument("preset", choices=("onlyoffice",), nargs="?", default="onlyoffice")
     start_parser.add_argument(
@@ -1362,6 +1860,13 @@ def main() -> int:
         action="store_true",
         help=_("force the generic private-XWayland compatibility lane"),
     )
+    run_parser.add_argument(
+        "--private-dbus",
+        action="store_true",
+        help=_("run the application on a private D-Bus session bus"),
+    )
+    run_parser.add_argument("--ime", choices=("auto", "simple", "fcitx5", "desktop", "inherit"), default="auto", help="input method: auto preserves user settings; fcitx5 starts an explicit private copy")
+    run_parser.add_argument("--a11y", action="store_true", help="enable private accessibility reads and guarded actions")
     run_parser.add_argument("--cwd", help=_("working directory for the wrapped application"))
     run_parser.add_argument(
         "--host-workspace",
@@ -1370,10 +1875,35 @@ def main() -> int:
         help=_("place the outer window on this host workspace"),
     )
     run_parser.add_argument("argv", nargs=argparse.REMAINDER, help=_("application command after --"))
+    launch_parser = commands.add_parser(
+        "launch",
+        help=_("wrap an application in a new automatically named instance"),
+    )
+    launch_parser.add_argument(
+        "--x11",
+        action="store_true",
+        help=_("force the generic private-XWayland compatibility lane"),
+    )
+    launch_parser.add_argument(
+        "--private-dbus",
+        action="store_true",
+        help=_("run the application on a private D-Bus session bus"),
+    )
+    launch_parser.add_argument("--ime", choices=("auto", "simple", "fcitx5", "desktop", "inherit"), default="auto", help="input method: auto preserves user settings; fcitx5 starts an explicit private copy")
+    launch_parser.add_argument("--a11y", action="store_true", help="enable private accessibility reads and guarded actions")
+    launch_parser.add_argument("--cwd", help=_("working directory for the wrapped application"))
+    launch_parser.add_argument(
+        "--host-workspace",
+        default="current",
+        metavar="N|current",
+        help=_("place the outer window on the current or named host workspace"),
+    )
+    launch_parser.add_argument("argv", nargs=argparse.REMAINDER, help=_("application command after --"))
     commands.add_parser("version", help=_("show the controller and protocol version"))
     commands.add_parser("paths", help=_("show AgentSeat's XDG storage locations"))
     commands.add_parser("config", help=_("show the effective AgentSeat configuration"))
     commands.add_parser("status", help=_("show the current AgentSeat session"))
+    commands.add_parser("instances", help=_("list named AgentSeat application instances"))
     heartbeat_parser = commands.add_parser(
         "heartbeat",
         help=_("verify that the current application session can be reconnected"),
@@ -1412,6 +1942,26 @@ def main() -> int:
     messages_parser.add_argument("--after", type=int, default=0)
     reply_parser = commands.add_parser("reply", help=_("reply to the human in the eye HUD"))
     reply_parser.add_argument("text")
+    a11y_parser = commands.add_parser("a11y", help="scoped controls, native semantic actions and condition waits")
+    a11y_parser.add_argument("action", choices=("status", "snapshot", "query", "get", "text", "text-state", "perform", "set-text", "set-value", "focus", "select", "scroll-to", "subscribe", "events", "wait", "wait-start", "wait-get", "wait-cancel"))
+    a11y_parser.add_argument("value", nargs="?")
+    a11y_parser.add_argument("argument", nargs="?")
+    a11y_parser.add_argument("--snapshot-id")
+    a11y_parser.add_argument("--root-ref")
+    a11y_parser.add_argument("--max-nodes", type=int, default=512)
+    a11y_parser.add_argument("--max-depth", type=int, default=16)
+    a11y_parser.add_argument("--offset", type=int, default=0)
+    a11y_parser.add_argument("--limit", type=int, default=64)
+    a11y_parser.add_argument("--exact", action="store_true")
+    a11y_parser.add_argument("--role")
+    a11y_parser.add_argument("--interface")
+    a11y_parser.add_argument("--expect-scope")
+    a11y_parser.add_argument("--state", action="append", default=[])
+    a11y_parser.add_argument("--start", type=int, default=0)
+    a11y_parser.add_argument("--count", type=int, default=1024)
+    a11y_parser.add_argument("--after", type=int, default=0)
+    a11y_parser.add_argument("--timeout-ms", type=int, default=5000)
+    a11y_parser.add_argument("--condition", help="JSON condition for wait or optional post-action verification")
     commands.add_parser("windows", help=_("list windows in the wrapped application tree"))
     commands.add_parser("pause", help=_("pause Agent input"))
     commands.add_parser("resume", help=_("resume Agent input"))
@@ -1432,16 +1982,52 @@ def main() -> int:
     observe_parser.add_argument("path", nargs="?")
     commands.add_parser("stop", help=_("stop the current AgentSeat session"))
     args = parser.parse_args()
+    if args.controller:
+        if len(args.controller) > 128 or "\0" in args.controller:
+            raise AgentSeatError("controller identity must be a NUL-free string of at most 128 characters")
+        RPC_CONTROLLER_ID = args.controller
 
+
+    if args.command in {"launch", "instances"} and args.instance:
+        parser.error(_("--instance cannot be combined with {command}").format(command=args.command))
+    if args.instance and SELECTED_INSTANCE != args.instance:
+        execute_for_instance(args.instance, sys.argv[1:])
+        return 0
+
+    if args.command == "launch":
+        application_argv = normalize_argv(args.argv)
+        instance_id = allocate_instance_id(application_argv)
+        forwarded: list[str] = []
+        if args.language:
+            forwarded.extend(["--language", str(args.language)])
+        forwarded.extend(["--instance", instance_id, "run"])
+        if args.x11:
+            forwarded.append("--x11")
+        if args.private_dbus:
+            forwarded.append("--private-dbus")
+        if args.a11y:
+            forwarded.append("--a11y")
+        forwarded.extend(["--ime", args.ime])
+        if args.cwd:
+            forwarded.extend(["--cwd", args.cwd])
+        forwarded.extend([
+            "--host-workspace",
+            str(launch_workspace(args.host_workspace)),
+            "--",
+            *application_argv,
+        ])
+        execute_for_instance(instance_id, forwarded)
+        return 0
     if args.command == "start":
         argv, mode, compat_type = legacy_command(args.preset)
         result = start_safely(
             argv,
             mode=mode,
-            cwd=None,
+            cwd=normalized_cwd(None),
             host_workspace=args.host_workspace,
             legacy_preset=args.preset,
             compat_type=compat_type,
+            ime=resolve_ime("auto"),
         )
     elif args.command == "run":
         result = start_safely(
@@ -1449,6 +2035,9 @@ def main() -> int:
             mode="x11" if args.x11 else "wayland",
             cwd=normalized_cwd(args.cwd),
             host_workspace=args.host_workspace,
+            private_dbus=args.private_dbus,
+            a11y=args.a11y,
+            ime=resolve_ime(args.ime, args.private_dbus),
         )
     elif args.command == "version":
         result = version()
@@ -1458,6 +2047,8 @@ def main() -> int:
         result = configuration_status()
     elif args.command == "status":
         result = status()
+    elif args.command == "instances":
+        result = list_instances()
     elif args.command == "heartbeat":
         result = session_heartbeat(args.expect_session)
     elif args.command == "watch":
@@ -1481,6 +2072,16 @@ def main() -> int:
                 "scope": "private-microhost",
                 "default_corner": "bottom-right",
             }
+    elif args.command == "window":
+        parameters = {name: getattr(args, name) for name in ("window_id", "x", "y", "width", "height") if hasattr(args, name)}
+        result = window_action("window." + args.action, parameters)
+    elif args.command == "control":
+        if args.action == "release":
+            result = release_write_control()
+        else:
+            result = rpc("control." + args.action)
+    elif args.command == "receipt":
+        result = rpc("request.get", {"controller_id": args.owner or RPC_CONTROLLER_ID, "request_id": args.request_id})
     elif args.command == "collaboration":
         result = collaboration_status()
     elif args.command == "activity":
@@ -1489,10 +2090,48 @@ def main() -> int:
         result = list_messages(args.after)
     elif args.command == "reply":
         result = reply_message(args.text)
+    elif args.command == "a11y":
+        condition = json.loads(args.condition) if args.condition else None
+        EXPECTED_A11Y_SCOPE = args.expect_scope
+        if args.action in {"perform", "set-text", "set-value", "focus", "select", "scroll-to"}:
+            if not args.value: raise AgentSeatError("node_ref is required")
+            params = {"node_ref": args.value, "timeout_ms": args.timeout_ms}
+            if args.action == "perform":
+                if args.argument is None: raise AgentSeatError("an actual action name or index is required; inspect a11y get first")
+                params["action"] = int(args.argument) if args.argument.isdecimal() else args.argument
+            elif args.action == "set-text":
+                if args.argument is None: raise AgentSeatError("text is required")
+                params["text"] = args.argument
+            elif args.action == "set-value": params["value"] = float(args.argument)
+            elif args.action == "select": params["index"] = int(args.argument)
+            result = semantic_action("a11y." + args.action.replace("-", "_"), params)
+            if condition is not None and result["execution"] == "finished":
+                result["postcondition"] = semantic_wait(condition, args.timeout_ms)
+                result["verification"] = "condition_satisfied" if result["postcondition"]["status"] == "satisfied" else "condition_not_satisfied"
+        elif args.action in {"wait", "wait-start"}:
+            if condition is None: raise AgentSeatError("--condition JSON is required")
+            result = semantic_wait(condition, args.timeout_ms) if args.action == "wait" else a11y_read("wait.start", condition=condition, timeout_ms=args.timeout_ms)
+        elif args.action in {"wait-get", "wait-cancel"}:
+            result = a11y_read(args.action.replace("-", "."), wait_id=args.value)
+        elif args.action == "subscribe": result = a11y_read("events.subscribe")
+        elif args.action == "events": result = a11y_read("events.read", after=args.after, limit=args.limit)
+        elif args.action == "text": result = a11y_read("text", value=args.value, start=args.start, count=args.count)
+        elif args.action == "text-state": result = a11y_read("text_state", value=args.value)
+        elif args.action == "get": result = a11y_read("get", value=args.value)
+        elif args.action == "status": result = a11y_read("status")
+        else:
+            params = {"limit": args.limit, "offset": args.offset, "max_nodes": args.max_nodes, "max_depth": args.max_depth}
+            if args.snapshot_id: params["snapshot_id"] = args.snapshot_id
+            if args.root_ref: params["root_ref"] = args.root_ref
+            if args.action == "query":
+                if args.exact or args.role or args.state or args.interface:
+                    params["selector"] = {"name": args.value or "", "exact": args.exact, "role": args.role, "states": args.state, "interface": args.interface}
+                else: params["value"] = args.value
+            result = a11y_read(args.action, **params)
     elif args.command == "windows":
         result = sync_window_tree()
     elif args.command == "pause":
-        result = rpc("seat.pause")
+        result = pause_seat()
     elif args.command == "resume":
         result = rpc("seat.resume")
     elif args.command == "move":
@@ -1514,7 +2153,7 @@ def main() -> int:
             result = onlyoffice_paste(args.text)
         else:
             try:
-                result = rpc("keyboard.type", {"text": args.text})
+                result = type_text(args.text)
             except AgentSeatError as exc:
                 if not str(exc).startswith("UNSUPPORTED_CHARACTER:"):
                     raise
