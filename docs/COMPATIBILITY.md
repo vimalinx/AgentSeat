@@ -24,6 +24,10 @@ read or fixture state); **O** verified by OCR or visual inspection only;
 | GTK 4 / GTK 3 / Qt 6 with IBus | Wayland and XWayland | Preedit and multilingual commit through a real IBus daemon | V | 2026-09-06 | `transparent-input-20260906/` |
 | GTK 4 keyboard layouts | Wayland and XWayland | German and French key positions; human and Agent layouts independent | V | 2026-09-06 | `transparent-input-20260906/` |
 | Human clipboard | Wayland data device | Text, PNG and 1.2 MB HTML both ways; human clipboard survives Agent paste | V | `2a485d54c50a`, 2026-09-06 | `human-compat-20260906/` |
+| Electron 44 dynamic fixture (T22) | Chromium, Wayland, `--force-renderer-accessibility` | 36-node tree incl. cross-site out-of-process iframe; semantic `press` with postcondition; replaced DOM node's old ref gives `STALE_NODE_REF`; timer updates via events and a text wait; semantic focus then typing; all with the window on a hidden workspace | V | source after `52250b7`, 2026-10-16 | `20261016-electron-canvas/electron-t22/` |
+| Visual Studio Code 1.135.0 (T22) | Electron, Wayland, `--force-renderer-accessibility`, isolated profile | Editor found by name, semantic focus, Ctrl+End, typing, Ctrl+S; saved file equals AT-SPI text | V | same, 2026-10-16 | `20261016-electron-canvas/vscode/` |
+| Tk 8.6 canvas fixture (T23) | Tk, XWayland, no accessibility | `SEMANTICS_UNAVAILABLE` for snapshot and `absent` wait; drag stroke, click on a canvas-drawn button, `type --keys` text, all confirmed by the app's state | V | same, 2026-10-16 | `20261016-electron-canvas/tk*/` |
+| Xournal++ 1.3.8 (T23) | GTK 3 canvas, Wayland, isolated profile | Pen stroke by visual drag, Ctrl+S; saved `.xopp` holds one 25-point stroke. Toolbars and menus are semantic, the ink is not | V | same, 2026-10-16 | `20261016-electron-canvas/xournalpp/` |
 
 ### Notes on partial and visual-only rows
 
@@ -31,6 +35,14 @@ read or fixture state); **O** verified by OCR or visual inspection only;
   by reading the saved document. The window ran under XWayland even though the
   launch requested Wayland. The legacy OCR paste lane for pre-0.5.0 sessions
   did not insert text in the same environment and was removed in 0.6.0.
+- **Chromium/Electron**: without `--force-renderer-accessibility` only the
+  application and frame nodes exist (the web contents are an AT-SPI null child);
+  `doctor` warns. All web nodes are served by the browser process even when a
+  frame renders out of process. Actions are named `press`/`activate`/`doDefault`
+  rather than `click`; inputs have no EditableText, so `set_text` returns
+  `ACTION_UNSUPPORTED` (focus semantically, then type); web node bounds are
+  `bounds_unmapped`. In one of five unflagged launches the application root
+  never registered; cause not identified.
 - **WeChat**: buttons that expose only a focus action need a visual click. Some
   embedded subtrees report `bounds_unmapped`; IME candidates keep the top-left
   placement. Only the listed paths were exercised, and no messages were sent.
@@ -40,6 +52,7 @@ read or fixture state); **O** verified by OCR or visual inspection only;
 | Case | Observed | Release, date | Evidence |
 |---|---|---|---|
 | Mousepad Save As driven by AT-SPI | AT-SPI query timed out, then the dialog tree was empty; typed name not shown. Root cause not confirmed. A later keyboard-driven save workflow passed. | `65048e8d2897`, 2026-09-06 | `computer-use-demo-20260906-031753/` |
+| vkcube (Vulkan demo) | Exits immediately in the private micro-host, both native Wayland and XWayland (software path cannot present); session ends with it | source `52250b7`, 2026-10-16 | `20261016-electron-canvas/vkcube*/` |
 | ONLYOFFICE legacy X11 OCR paste (removed in 0.6.0) | Paste menu found and clicked; text not inserted | source `f54ba9f`, 2026-10-16 | `20261016-review-followups/onlyoffice-compat*/` |
 
 ## Not yet verified
@@ -47,11 +60,10 @@ read or fixture state); **O** verified by OCR or visual inspection only;
 These rows of the acceptance matrix in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 have no current evidence:
 
-- Electron applications (for example VS Code) and Chromium multi-process node
-  replacement in the AT-SPI tree (T22). Screenshots from 2026-09-01 of Chrome,
-  Kdenlive, btop and RawTherapee predate the vNext protocol and only show launch.
-- Canvas-only or semantics-free applications reporting semantic absence instead
-  of empty success (T23).
+- Electron applications other than VS Code and the fixture, and Electron
+  versions other than 44. Screenshots from 2026-09-01 of Chrome, Kdenlive, btop
+  and RawTherapee predate the vNext protocol and only show launch.
+- GPU-presenting canvases (Vulkan/GL games and viewers) inside the micro-host.
 - Portal, authentication and external URL handlers crossing the scope boundary (T30).
 - Parity with any named macOS Computer Use product on the same tasks.
 - Input methods other than Fcitx5 and IBus, and toolkits other than GTK 3/4,

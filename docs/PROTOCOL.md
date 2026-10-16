@@ -302,6 +302,13 @@ empty result would read like an empty application and would satisfy an
 case as a warning and `capabilities` marks semantic entries as not exposed by
 the application.
 
+AT-SPI null object references (`/org/a11y/atspi/null`) are skipped and counted
+in the snapshot's `null_children`; they are not read errors. Application nodes
+carry `toolkit` (`Application.ToolkitName`). Chromium and Electron expose only
+their frame until renderer accessibility is on: launch them with
+`--force-renderer-accessibility`. `doctor` warns and `capabilities` adds a note
+when a Chromium toolkit reports a null child.
+
 `text_state` (SDK `text_state(ref)`) reads the application's caret offset,
 character count and up to 16 selection ranges. Password/protected nodes reject
 this read before fetching offsets. It does not fetch text or modify selection.

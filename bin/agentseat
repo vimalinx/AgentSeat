@@ -1876,6 +1876,12 @@ def collaboration_status() -> dict[str, Any]:
     return rpc("collaboration.status")
 
 
+# Chromium and Electron expose only the window frame until renderer
+# accessibility is on; the web contents appear as an AT-SPI null child.
+CHROMIUM_WEB_HIDDEN = ("Chromium/Electron web content is not exposed; relaunch the application "
+                       "with --force-renderer-accessibility for semantic reads")
+
+
 def probe_session() -> dict[str, Any]:
     """Collect read-only session facts; never focuses, acquires or injects."""
     facts: dict[str, Any] = {"running": bool(microhost_pid() and CONTROL_SOCKET.exists())}
@@ -1894,6 +1900,9 @@ def probe_session() -> dict[str, Any]:
             facts["a11y"] = a11y_read("status")
             snapshot = a11y_read("snapshot", max_nodes=8, max_depth=3)
             facts["a11y_nodes"] = len(snapshot.get("nodes", []))
+            toolkits = {node.get("toolkit") for node in snapshot.get("nodes", [])} - {None}
+            if "Chromium" in toolkits and snapshot.get("null_children"):
+                facts["a11y_note"] = CHROMIUM_WEB_HIDDEN
         except AgentSeatError as exc:
             if "SEMANTICS_UNAVAILABLE" in str(exc):
                 facts["a11y_nodes"] = 0
@@ -1974,9 +1983,10 @@ def doctor(probe_capture: bool = False) -> dict[str, Any]:
             check("a11y", "fail", facts["a11y_error"])
         else:
             nodes = facts.get("a11y_nodes", 0)
-            check("a11y", "ok" if nodes > 1 else "warn",
-                  {"scope": facts["a11y"].get("scope"), "sample_nodes": nodes,
-                   "note": None if nodes > 1 else "application exposes no controls beyond its root; use visual input"})
+            note = facts.get("a11y_note") or (
+                None if nodes > 1 else "application exposes no controls beyond its root; use visual input")
+            check("a11y", "ok" if note is None else "warn",
+                  {"scope": facts["a11y"].get("scope"), "sample_nodes": nodes, "note": note})
         if probe_capture:
             started = time.monotonic()
             try:
@@ -2061,7 +2071,8 @@ def capabilities() -> dict[str, Any]:
         "windows.focus_move_resize_close": {**entry(True, has_windows, writes_allowed if live else None,
                                                     hidden="no mapped window", denied=write_reason),
                                             "verification": "compositor_confirmed"},
-        "semantic.read": entry(True, semantic_exposes, a11y_launched, hidden=semantic_hidden, denied=semantic_denied),
+        "semantic.read": {**entry(True, semantic_exposes, a11y_launched, hidden=semantic_hidden, denied=semantic_denied),
+                          "note": facts.get("a11y_note")},
         "semantic.actions": {**entry(True, semantic_exposes, (a11y_launched and writes_allowed) if live else None,
                                      hidden=semantic_hidden,
                                      denied=semantic_denied if live and not launch.get("a11y") else write_reason),

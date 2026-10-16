@@ -169,7 +169,8 @@ changing anything; `capabilities` separates what is implemented, what the
 application exposes, what this session may do and what is available now.
 Applications without accessibility (Tk, games, canvas toolkits) report
 `SEMANTICS_UNAVAILABLE` for semantic reads; operate them visually, and use
-`type --keys` where they ignore paste.
+`type --keys` where they ignore paste. Chromium and Electron applications need
+`--force-renderer-accessibility` in their own arguments to expose web content.
 
 `run` keeps the original single default session for direct Agent operation.
 Use `launch` when each desktop application needs its own independently managed

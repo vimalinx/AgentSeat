@@ -24,6 +24,7 @@ from gi.repository import Gio, GLib, Atspi
 
 STATE_NAMES = {index: state.value_nick for index, state in Atspi.StateType.__enum_values__.items()}
 API = "org.a11y.atspi."
+NULL_PATH = "/org/a11y/atspi/null"
 MAX_EVENTS = 256
 MAX_WAITS = 16
 WRITE_KINDS = {"a11y.perform", "a11y.set_text", "a11y.set_value", "a11y.focus", "a11y.select", "a11y.scroll_to"}
@@ -354,6 +355,13 @@ class Bridge:
             "interfaces": [str(interface)[:255] for interface in interfaces[:32]], "states": states, "depth": depth, "protected": protected,
             "child_count": max(0, int(props.get("ChildCount", 0))), "source": "native-atspi",
             "observed_ns": time.monotonic_ns()}
+        if role_id == int(Atspi.Role.APPLICATION) and API + "Application" in interfaces:
+            try:
+                toolkit = self.call(self.bus, owner, path, "org.freedesktop.DBus.Properties", "Get", "(ss)",
+                                    (API + "Application", "ToolkitName"))[0]
+                result["toolkit"] = str(toolkit)[:64]
+            except GLib.Error:
+                pass
         if details:
             result["actions"] = self.actions(owner, path) if API + "Action" in interfaces else []
             if API + "Component" in interfaces:
@@ -640,6 +648,7 @@ class Bridge:
             raise RuntimeError("SEMANTICS_UNAVAILABLE")
         snapshot_id = uuid.uuid4().hex
         nodes, refs, seen, errors = [], {}, set(), []
+        null_children = 0
         incomplete = len(roots) > 256
         while pending and len(nodes) < max_nodes:
             owner, path, depth, parent_ref = pending.popleft()
@@ -658,6 +667,11 @@ class Bridge:
                 if len(errors) < 16:
                     errors.append({"kind": str(error) if isinstance(error, RuntimeError) else Gio.DBusError.get_remote_error(error) or "ACCESSIBILITY_READ_FAILED", "depth": depth})
                 continue
+            # AT-SPI's null object stands for a child the toolkit has not
+            # exposed (Chromium web contents without renderer accessibility).
+            # It is not a node and not a read failure.
+            null_children += sum(child_path == NULL_PATH for _, child_path in children)
+            children = [child for child in children if child[1] != NULL_PATH]
             node["parent_ref"] = parent_ref
             nodes.append(node)
             refs[ref] = (owner, path, node["pid"], node["process_start"], self.generations.get((owner, path), 0))
@@ -672,6 +686,7 @@ class Bridge:
                 pending.extend((child_owner, child_path, depth + 1, ref) for child_owner, child_path in children[:remaining])
         result = {"snapshot_id": snapshot_id, "scope_id": self.scope_id, "nodes": nodes,
                   "truncated": incomplete or bool(pending), "text_interface_read": False, "errors": errors,
+                  "null_children": null_children,
                   "traversal": {"max_nodes": max_nodes, "max_depth": max_depth, "budget_ms": int(budget * 1000)}}
         self.snapshots[snapshot_id] = (time.monotonic(), result, refs)
         while len(self.snapshots) > 4:

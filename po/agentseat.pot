@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-16 20:56+0800\n"
+"POT-Creation-Date: 2026-10-16 21:07+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -422,166 +422,166 @@ msgstr ""
 msgid "no leased application window is available"
 msgstr ""
 
-#: bin/agentseat:2101
+#: bin/agentseat:2112
 msgid "Operate one local application with a private AI pointer and keyboard."
 msgstr ""
 
-#: bin/agentseat:2107
+#: bin/agentseat:2118
 msgid "interface language: auto, en, zh-CN, or zh-TW"
 msgstr ""
 
-#: bin/agentseat:2113
+#: bin/agentseat:2124
 msgid "operate one named AgentSeat application instance"
 msgstr ""
 
-#: bin/agentseat:2130
+#: bin/agentseat:2141
 msgid "start a legacy verified demo"
 msgstr ""
 
-#: bin/agentseat:2136 bin/agentseat:2156
+#: bin/agentseat:2147 bin/agentseat:2167
 msgid "place the outer window on this host workspace"
 msgstr ""
 
-#: bin/agentseat:2138
+#: bin/agentseat:2149
 msgid "wrap an arbitrary application command"
 msgstr ""
 
-#: bin/agentseat:2142 bin/agentseat:2166
+#: bin/agentseat:2153 bin/agentseat:2177
 msgid "force the generic private-XWayland compatibility lane"
 msgstr ""
 
-#: bin/agentseat:2147 bin/agentseat:2171
+#: bin/agentseat:2158 bin/agentseat:2182
 msgid "run the application on a private D-Bus session bus"
 msgstr ""
 
-#: bin/agentseat:2151 bin/agentseat:2175
+#: bin/agentseat:2162 bin/agentseat:2186
 msgid "working directory for the wrapped application"
 msgstr ""
 
-#: bin/agentseat:2158 bin/agentseat:2182
+#: bin/agentseat:2169 bin/agentseat:2193
 msgid "application command after --"
 msgstr ""
 
-#: bin/agentseat:2161
+#: bin/agentseat:2172
 msgid "wrap an application in a new automatically named instance"
 msgstr ""
 
-#: bin/agentseat:2180
+#: bin/agentseat:2191
 msgid "place the outer window on the current or named host workspace"
 msgstr ""
 
-#: bin/agentseat:2183
+#: bin/agentseat:2194
 msgid "show the controller and protocol version"
 msgstr ""
 
-#: bin/agentseat:2184
+#: bin/agentseat:2195
 msgid "show AgentSeat's XDG storage locations"
 msgstr ""
 
-#: bin/agentseat:2185
+#: bin/agentseat:2196
 msgid "show the effective AgentSeat configuration"
 msgstr ""
 
-#: bin/agentseat:2186
+#: bin/agentseat:2197
 msgid "show the current AgentSeat session"
 msgstr ""
 
-#: bin/agentseat:2187
+#: bin/agentseat:2198
 msgid "list named AgentSeat application instances"
 msgstr ""
 
-#: bin/agentseat:2190
+#: bin/agentseat:2201
 msgid "verify that the current application session can be reconnected"
 msgstr ""
 
-#: bin/agentseat:2194 bin/agentseat:2214
+#: bin/agentseat:2205 bin/agentseat:2225
 msgid "fail if the connected session does not have this identity"
 msgstr ""
 
-#: bin/agentseat:2198
+#: bin/agentseat:2209
 msgid "continuously reconnect and stream session heartbeats"
 msgstr ""
 
-#: bin/agentseat:2204
+#: bin/agentseat:2215
 msgid "seconds between reconnect checks"
 msgstr ""
 
-#: bin/agentseat:2210
+#: bin/agentseat:2221
 msgid "number of checks; zero keeps watching until interrupted"
 msgstr ""
 
-#: bin/agentseat:2216
+#: bin/agentseat:2227
 msgid "control the embedded private-microhost AI head"
 msgstr ""
 
-#: bin/agentseat:2218
+#: bin/agentseat:2229
 msgid "show human-priority and AI activity state"
 msgstr ""
 
-#: bin/agentseat:2219
+#: bin/agentseat:2230
 msgid "publish the Agent's current AgentSeat action"
 msgstr ""
 
-#: bin/agentseat:2222
+#: bin/agentseat:2233
 msgid "read messages sent from the eye HUD"
 msgstr ""
 
-#: bin/agentseat:2224
+#: bin/agentseat:2235
 msgid "reply to the human in the eye HUD"
 msgstr ""
 
-#: bin/agentseat:2246
+#: bin/agentseat:2257
 msgid "list windows in the wrapped application tree"
 msgstr ""
 
-#: bin/agentseat:2247
+#: bin/agentseat:2258
 msgid "pause Agent input"
 msgstr ""
 
-#: bin/agentseat:2248
+#: bin/agentseat:2259
 msgid "resume Agent input"
 msgstr ""
 
-#: bin/agentseat:2249
+#: bin/agentseat:2260
 msgid "move the private pointer using normalized coordinates"
 msgstr ""
 
-#: bin/agentseat:2252
+#: bin/agentseat:2263
 msgid "click with the private pointer"
 msgstr ""
 
-#: bin/agentseat:2254
+#: bin/agentseat:2265
 msgid "scroll inside the wrapped application"
 msgstr ""
 
-#: bin/agentseat:2257
+#: bin/agentseat:2268
 msgid "send one scoped evdev key event"
 msgstr ""
 
-#: bin/agentseat:2260
+#: bin/agentseat:2271
 msgid "type text with the private keyboard"
 msgstr ""
 
-#: bin/agentseat:2264
+#: bin/agentseat:2275
 msgid ""
 "send key events instead of a private paste, for applications that ignore "
 "paste"
 msgstr ""
 
-#: bin/agentseat:2265
+#: bin/agentseat:2276
 msgid "capture the private application output"
 msgstr ""
 
-#: bin/agentseat:2278
+#: bin/agentseat:2289
 msgid "stop the current AgentSeat session"
 msgstr ""
 
-#: bin/agentseat:2287
+#: bin/agentseat:2298
 #, python-brace-format
 msgid "--instance cannot be combined with {command}"
 msgstr ""
 
-#: bin/agentseat:2461
+#: bin/agentseat:2472
 msgid "unknown command"
 msgstr ""
 

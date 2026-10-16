@@ -2,7 +2,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: AgentSeat 0.5.2\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-16 20:56+0800\n"
+"POT-Creation-Date: 2026-10-16 21:07+0800\n"
 "PO-Revision-Date: 2026-08-31 00:00+0800\n"
 "Last-Translator: AgentSeat contributors\n"
 "Language-Team: Simplified Chinese\n"
@@ -417,166 +417,166 @@ msgstr "已有截图输出必须是当前用户拥有的普通文件"
 msgid "no leased application window is available"
 msgstr "没有可用的已授权应用窗口"
 
-#: bin/agentseat:2101
+#: bin/agentseat:2112
 msgid "Operate one local application with a private AI pointer and keyboard."
 msgstr "使用 AI 的私有指针和键盘操作一个本地应用。"
 
-#: bin/agentseat:2107
+#: bin/agentseat:2118
 msgid "interface language: auto, en, zh-CN, or zh-TW"
 msgstr "界面语言：auto、en、zh-CN 或 zh-TW"
 
-#: bin/agentseat:2113
+#: bin/agentseat:2124
 msgid "operate one named AgentSeat application instance"
 msgstr "操作一个具名的 AgentSeat 应用实例"
 
-#: bin/agentseat:2130
+#: bin/agentseat:2141
 msgid "start a legacy verified demo"
 msgstr "启动已验证的旧版演示"
 
-#: bin/agentseat:2136 bin/agentseat:2156
+#: bin/agentseat:2147 bin/agentseat:2167
 msgid "place the outer window on this host workspace"
 msgstr "将外层窗口放到这个宿主工作区"
 
-#: bin/agentseat:2138
+#: bin/agentseat:2149
 msgid "wrap an arbitrary application command"
 msgstr "封装任意应用命令"
 
-#: bin/agentseat:2142 bin/agentseat:2166
+#: bin/agentseat:2153 bin/agentseat:2177
 msgid "force the generic private-XWayland compatibility lane"
 msgstr "强制使用通用私有 XWayland 兼容通道"
 
-#: bin/agentseat:2147 bin/agentseat:2171
+#: bin/agentseat:2158 bin/agentseat:2182
 msgid "run the application on a private D-Bus session bus"
 msgstr "在私有 D-Bus 会话总线上运行应用"
 
-#: bin/agentseat:2151 bin/agentseat:2175
+#: bin/agentseat:2162 bin/agentseat:2186
 msgid "working directory for the wrapped application"
 msgstr "被封装应用的工作目录"
 
-#: bin/agentseat:2158 bin/agentseat:2182
+#: bin/agentseat:2169 bin/agentseat:2193
 msgid "application command after --"
 msgstr "-- 后的应用命令"
 
-#: bin/agentseat:2161
+#: bin/agentseat:2172
 msgid "wrap an application in a new automatically named instance"
 msgstr "在自动命名的新实例中封装应用"
 
-#: bin/agentseat:2180
+#: bin/agentseat:2191
 msgid "place the outer window on the current or named host workspace"
 msgstr "将外层窗口放到当前或指定的宿主工作区"
 
-#: bin/agentseat:2183
+#: bin/agentseat:2194
 msgid "show the controller and protocol version"
 msgstr "显示控制器和协议版本"
 
-#: bin/agentseat:2184
+#: bin/agentseat:2195
 msgid "show AgentSeat's XDG storage locations"
 msgstr "显示 AgentSeat 的 XDG 存储位置"
 
-#: bin/agentseat:2185
+#: bin/agentseat:2196
 msgid "show the effective AgentSeat configuration"
 msgstr "显示当前生效的 AgentSeat 配置"
 
-#: bin/agentseat:2186
+#: bin/agentseat:2197
 msgid "show the current AgentSeat session"
 msgstr "显示当前 AgentSeat 会话"
 
-#: bin/agentseat:2187
+#: bin/agentseat:2198
 msgid "list named AgentSeat application instances"
 msgstr "列出具名的 AgentSeat 应用实例"
 
-#: bin/agentseat:2190
+#: bin/agentseat:2201
 msgid "verify that the current application session can be reconnected"
 msgstr "验证当前应用会话是否可以重新连接"
 
-#: bin/agentseat:2194 bin/agentseat:2214
+#: bin/agentseat:2205 bin/agentseat:2225
 msgid "fail if the connected session does not have this identity"
 msgstr "如果已连接会话不是此身份则失败"
 
-#: bin/agentseat:2198
+#: bin/agentseat:2209
 msgid "continuously reconnect and stream session heartbeats"
 msgstr "持续重新连接并输出会话心跳流"
 
-#: bin/agentseat:2204
+#: bin/agentseat:2215
 msgid "seconds between reconnect checks"
 msgstr "两次重连检查之间的秒数"
 
-#: bin/agentseat:2210
+#: bin/agentseat:2221
 msgid "number of checks; zero keeps watching until interrupted"
 msgstr "检查次数；0 表示持续监测直到被中断"
 
-#: bin/agentseat:2216
+#: bin/agentseat:2227
 msgid "control the embedded private-microhost AI head"
 msgstr "控制嵌入私有微宿主的 AI 小脑袋"
 
-#: bin/agentseat:2218
+#: bin/agentseat:2229
 msgid "show human-priority and AI activity state"
 msgstr "显示人类优先级和 AI 活动状态"
 
-#: bin/agentseat:2219
+#: bin/agentseat:2230
 msgid "publish the Agent's current AgentSeat action"
 msgstr "发布 Agent 当前的 AgentSeat 操作"
 
-#: bin/agentseat:2222
+#: bin/agentseat:2233
 msgid "read messages sent from the eye HUD"
 msgstr "读取从小脑袋 HUD 发来的消息"
 
-#: bin/agentseat:2224
+#: bin/agentseat:2235
 msgid "reply to the human in the eye HUD"
 msgstr "回复小脑袋 HUD 中的人类"
 
-#: bin/agentseat:2246
+#: bin/agentseat:2257
 msgid "list windows in the wrapped application tree"
 msgstr "列出被封装应用树中的窗口"
 
-#: bin/agentseat:2247
+#: bin/agentseat:2258
 msgid "pause Agent input"
 msgstr "暂停 Agent 输入"
 
-#: bin/agentseat:2248
+#: bin/agentseat:2259
 msgid "resume Agent input"
 msgstr "恢复 Agent 输入"
 
-#: bin/agentseat:2249
+#: bin/agentseat:2260
 msgid "move the private pointer using normalized coordinates"
 msgstr "使用归一化坐标移动私有指针"
 
-#: bin/agentseat:2252
+#: bin/agentseat:2263
 msgid "click with the private pointer"
 msgstr "使用私有指针点击"
 
-#: bin/agentseat:2254
+#: bin/agentseat:2265
 msgid "scroll inside the wrapped application"
 msgstr "在被封装应用内滚动"
 
-#: bin/agentseat:2257
+#: bin/agentseat:2268
 msgid "send one scoped evdev key event"
 msgstr "发送一个限定范围的 evdev 按键事件"
 
-#: bin/agentseat:2260
+#: bin/agentseat:2271
 msgid "type text with the private keyboard"
 msgstr "使用私有键盘输入文本"
 
-#: bin/agentseat:2264
+#: bin/agentseat:2275
 msgid ""
 "send key events instead of a private paste, for applications that ignore "
 "paste"
 msgstr "发送按键事件而不是私有粘贴，用于不接受粘贴的应用"
 
-#: bin/agentseat:2265
+#: bin/agentseat:2276
 msgid "capture the private application output"
 msgstr "截取私有应用输出"
 
-#: bin/agentseat:2278
+#: bin/agentseat:2289
 msgid "stop the current AgentSeat session"
 msgstr "停止当前 AgentSeat 会话"
 
-#: bin/agentseat:2287
+#: bin/agentseat:2298
 #, python-brace-format
 msgid "--instance cannot be combined with {command}"
 msgstr "--instance 不能与 {command} 同时使用"
 
-#: bin/agentseat:2461
+#: bin/agentseat:2472
 msgid "unknown command"
 msgstr "未知命令"
 
