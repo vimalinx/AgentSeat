@@ -60,6 +60,35 @@ viewporter_code = custom_target(
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+text_input_xml = join_paths(wayland_protocols_dir, 'unstable', 'text-input', 'text-input-unstable-v3.xml')
+text_input_header = custom_target('text-input-client-header', input: text_input_xml,
+  output: 'text-input-client-protocol.h', command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'])
+text_input_code = custom_target('text-input-client-code', input: text_input_xml,
+  output: 'text-input-client-protocol.c', command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
+
+control_xml = '../../native/protocols/agentseat-control-v1.xml'
+xdg_shell_xml = join_paths(wayland_protocols_dir, 'stable', 'xdg-shell', 'xdg-shell.xml')
+xdg_shell_client_header = custom_target(
+  'xdg-shell-client-header', input: xdg_shell_xml,
+  output: 'xdg-shell-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+xdg_shell_client_code = custom_target(
+  'xdg-shell-client-code', input: xdg_shell_xml,
+  output: 'xdg-shell-client-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+control_header = custom_target(
+  'agentseat-control-server-header', input: control_xml,
+  output: 'agentseat-control-v1-server-protocol.h',
+  command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
+control_code = custom_target(
+  'agentseat-control-code', input: control_xml,
+  output: 'agentseat-control-v1-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 have_xwayland = wlroots.get_variable(pkgconfig: 'have_xwayland', internal: 'have_xwayland') == 'true'
 
 version = '@0@'.format(meson.project_version())
@@ -112,11 +141,24 @@ cage_sources = [
   'cage.c',
   'idle_inhibit_v1.c',
   'output.c',
+  'host-window.c',
+  'application-lifetime.c',
+  'host-clipboard.c',
+  'host-text-input.c',
+  'host-keyboard.c',
+  text_input_header,
+  text_input_code,
   'seat.c',
+  'agentseat-scene.c',
+  'agentseat-clipboard.c',
   'view.c',
   'xdg_shell.c',
+  control_header,
+  control_code,
   viewporter_header,
   viewporter_code,
+  xdg_shell_client_header,
+  xdg_shell_client_code,
   configure_file(input: 'config.h.in',
                  output: 'config.h',
                  configuration: conf_data),

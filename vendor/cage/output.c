@@ -12,17 +12,15 @@
 #include "config.h"
 
 #include <assert.h>
-#include <fcntl.h>
-#include <limits.h>
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
+#include <wlr/backend/multi.h>
+#include <wlr/backend/wayland.h>
 #include <wlr/backend/multi.h>
 #include <wlr/backend/wayland.h>
 #include <wlr/config.h>
@@ -43,6 +41,8 @@
 #include <wlr/util/region.h>
 
 #include "output.h"
+#include "host-window.h"
+#include "agentseat-scene.h"
 #include "seat.h"
 #include "server.h"
 #include "view.h"
@@ -54,6 +54,17 @@
 #define OUTPUT_CONFIG_UPDATED                                                                                          \
 	(WLR_OUTPUT_STATE_ENABLED | WLR_OUTPUT_STATE_MODE | WLR_OUTPUT_STATE_SCALE | WLR_OUTPUT_STATE_TRANSFORM |      \
 	 WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED)
+
+#define AGENTSEAT_FALLBACK_FRAME_MS 17
+
+/* X11 drawable sizes are pixels. Use the complete physical grid internally,
+ * while the parent viewport retains the host's logical window size. */
+static float
+application_output_scale(float host_scale)
+{
+	const char *mode = getenv("AGENTSEAT_APPLICATION_MODE");
+	return mode && strcmp(mode, "x11") == 0 ? 1.0f : host_scale;
+}
 
 static float
 agentseat_host_scale(void)
@@ -67,58 +78,18 @@ agentseat_host_scale(void)
 	return end && end[0] == '\0' && isfinite(scale) && scale >= 1.0f && scale <= 4.0f ? scale : 1.0f;
 }
 
-static bool
-agentseat_physical_layout(void)
-{
-	const char *value = getenv("AGENTSEAT_PHYSICAL_LAYOUT");
-	return value && strcmp(value, "1") == 0;
-}
-
-static bool
-agentseat_fit_output(void)
-{
-	const char *value = getenv("AGENTSEAT_FIT_OUTPUT");
-	return value && strcmp(value, "1") == 0;
-}
-
 static int
 physical_size(int logical_size, float scale)
 {
-	return (int)lroundf((float)logical_size * scale);
+	/* The output layout truncates physical / scale. Round the buffer up so
+	 * fractional scaling never removes the final logical column or row. */
+	return (int)ceilf((float)logical_size * scale);
 }
 
 static int
 logical_size(int physical_size_value, float scale)
 {
 	return (int)lroundf((float)physical_size_value / scale);
-}
-
-static void
-write_fit_receipt(int logical_width, int logical_height, int buffer_width, int buffer_height)
-{
-	const char *path = getenv("AGENTSEAT_FIT_FILE");
-	if (!path || !path[0]) {
-		return;
-	}
-	char temporary[PATH_MAX];
-	int path_length = snprintf(temporary, sizeof(temporary), "%s.tmp", path);
-	if (path_length < 0 || (size_t)path_length >= sizeof(temporary)) {
-		return;
-	}
-	int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
-	if (fd < 0) {
-		return;
-	}
-	char payload[192];
-	int payload_length = snprintf(payload, sizeof(payload),
-		"{\"logical_width\":%d,\"logical_height\":%d,\"buffer_width\":%d,\"buffer_height\":%d}\n",
-		logical_width, logical_height, buffer_width, buffer_height);
-	bool complete = payload_length > 0 && (size_t)payload_length < sizeof(payload) &&
-		write(fd, payload, (size_t)payload_length) == payload_length;
-	close(fd);
-	if (!complete || rename(temporary, path) != 0) {
-		unlink(temporary);
-	}
 }
 
 static void
@@ -292,15 +263,28 @@ output_disable(struct cg_output *output)
 static void
 output_render(struct cg_output *output)
 {
-	if (!output->wlr_output->enabled || !output->scene_output) {
+	if (!output->wlr_output->enabled || !output->scene_output || !host_window_can_render(output->server)) {
 		return;
 	}
 
-	wlr_scene_output_commit(output->scene_output, NULL);
+	if (!wlr_scene_output_commit(output->scene_output, NULL))
+		wlr_log(WLR_ERROR, "Application output frame commit failed");
 
 	struct timespec now = {0};
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	wlr_scene_output_send_frame_done(output->scene_output, &now);
+}
+
+void
+output_repaint_all(struct cg_server *server)
+{
+    struct cg_output *output;
+    wl_list_for_each(output, &server->outputs, link) {
+        if (output->scene_output) {
+            wlr_damage_ring_add_whole(&output->scene_output->damage_ring);
+            output_render(output);
+        }
+    }
 }
 
 void
@@ -312,60 +296,34 @@ output_render_all(struct cg_server *server)
 	}
 }
 
-bool
-output_fit_application(struct cg_server *server, int width, int height)
-{
-	if (!agentseat_fit_output() || width < 160 || height < 120) {
-		return false;
-	}
-
-	struct cg_output *output = NULL;
-	struct cg_output *candidate;
-	wl_list_for_each (candidate, &server->outputs, link) {
-		if (candidate->wlr_output->enabled && wlr_output_is_wl(candidate->wlr_output)) {
-			output = candidate;
-			break;
-		}
-	}
-	if (!output) {
-		return false;
-	}
-
-	if (output->fit_max_width > 0 && width > output->fit_max_width) {
-		width = output->fit_max_width;
-	}
-	if (output->fit_max_height > 0 && height > output->fit_max_height) {
-		height = output->fit_max_height;
-	}
-	float scale = output->host_viewport ? agentseat_host_scale() : 1.0f;
-	int logical_width = output->host_viewport ? logical_size(width, scale) : width;
-	int logical_height = output->host_viewport ? logical_size(height, scale) : height;
-	if (width == output->wlr_output->width && height == output->wlr_output->height) {
-		write_fit_receipt(logical_width, logical_height, width, height);
-		return false;
-	}
-
-	if (output->host_viewport) {
-		wp_viewport_set_destination(output->host_viewport, logical_width, logical_height);
-	}
-
-	struct wlr_output_state state = {0};
-	wlr_output_state_set_custom_mode(&state, width, height, output->wlr_output->refresh);
-	if (!wlr_output_commit_state(output->wlr_output, &state)) {
-		wlr_log(WLR_ERROR, "Unable to fit nested output to application size %dx%d", width, height);
-		return false;
-	}
-	wlr_log(WLR_DEBUG, "Fitted nested output to application size %dx%d", width, height);
-	write_fit_receipt(logical_width, logical_height, width, height);
-	update_output_manager_config(server);
-	return true;
-}
-
 static void
 handle_output_frame(struct wl_listener *listener, void *data)
 {
 	struct cg_output *output = wl_container_of(listener, output, frame);
+	if (output->fallback_frame_timer) {
+		wl_event_source_timer_update(output->fallback_frame_timer, 0);
+	}
 	output_render(output);
+}
+
+static int
+handle_fallback_frame(void *data)
+{
+	struct cg_output *output = data;
+	if (output->wlr_output->enabled && output->scene_output &&
+	    wlr_scene_output_needs_frame(output->scene_output)) {
+		output_render(output);
+	}
+	return 0;
+}
+
+static void
+handle_output_needs_frame(struct wl_listener *listener, void *data)
+{
+	struct cg_output *output = wl_container_of(listener, output, needs_frame);
+	if (output->fallback_frame_timer) {
+		wl_event_source_timer_update(output->fallback_frame_timer, AGENTSEAT_FALLBACK_FRAME_MS);
+	}
 }
 
 static void
@@ -380,6 +338,7 @@ handle_output_commit(struct wl_listener *listener, void *data)
 
 	if (event->state->committed & OUTPUT_CONFIG_UPDATED) {
 		update_output_manager_config(output->server);
+		cg_scene_changed(output->server->seat);
 	}
 }
 
@@ -410,24 +369,19 @@ handle_output_request_state(struct wl_listener *listener, void *data)
 			? event->state->mode->refresh
 			: event->state->custom_mode.refresh;
 
-		/* Parent xdg_toplevel configure sizes and pointer events are logical.
-		 * Render the nested output at the matching physical pixel size, then
-		 * expose exactly the configured logical size through wp_viewporter. */
+		/* Parent configure sizes are logical. Keep that geometry unchanged,
+		 * render the matching physical pixel grid, and advertise the same
+		 * fractional scale to clients inside AgentSeat. */
 		int logical_width = width;
 		int logical_height = height;
-		if (width == output->wlr_output->width && height == output->wlr_output->height) {
+		if (!output->server->host_window && width == output->wlr_output->width && height == output->wlr_output->height) {
 			logical_width = logical_size(width, scale);
 			logical_height = logical_size(height, scale);
 		}
-		width = physical_size(logical_width, scale);
-		height = physical_size(logical_height, scale);
-		if (width > output->fit_max_width)
-			output->fit_max_width = width;
-		if (height > output->fit_max_height)
-			output->fit_max_height = height;
 		wp_viewport_set_destination(output->host_viewport, logical_width, logical_height);
-		wlr_output_state_set_custom_mode(&state, width, height, refresh);
-		wlr_output_state_set_scale(&state, agentseat_physical_layout() ? 1.0f : scale);
+		wlr_output_state_set_custom_mode(
+			&state, physical_size(logical_width, scale), physical_size(logical_height, scale), refresh);
+		wlr_output_state_set_scale(&state, application_output_scale(scale));
 		if (wlr_output_commit_state(output->wlr_output, &state)) {
 			update_output_manager_config(output->server);
 		}
@@ -436,10 +390,6 @@ handle_output_request_state(struct wl_listener *listener, void *data)
 	}
 
 	if (wlr_output_commit_state(output->wlr_output, event->state)) {
-		if (output->wlr_output->width > output->fit_max_width)
-			output->fit_max_width = output->wlr_output->width;
-		if (output->wlr_output->height > output->fit_max_height)
-			output->fit_max_height = output->wlr_output->height;
 		update_output_manager_config(output->server);
 	}
 }
@@ -478,9 +428,14 @@ output_destroy(struct cg_output *output)
 		wp_viewport_destroy(output->host_viewport);
 		output->host_viewport = NULL;
 	}
+	if (output->fallback_frame_timer) {
+		wl_event_source_remove(output->fallback_frame_timer);
+		output->fallback_frame_timer = NULL;
+	}
 
 	wl_list_remove(&output->destroy.link);
 	wl_list_remove(&output->commit.link);
+	wl_list_remove(&output->needs_frame.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->frame.link);
 	wl_list_remove(&output->link);
@@ -544,23 +499,36 @@ handle_new_output(struct wl_listener *listener, void *data)
 			host_scale = 1.0f;
 		}
 	}
+	output->host_coordinate_scale = output->host_viewport ? host_scale : 1.0f;
+	output->fallback_frame_timer = wl_event_loop_add_timer(
+		wl_display_get_event_loop(server->wl_display), handle_fallback_frame, output);
+	if (!output->fallback_frame_timer) {
+		wlr_log(WLR_ERROR, "Unable to create AgentSeat fallback frame timer");
+		wlr_output->data = NULL;
+		free(output);
+		return;
+	}
+	output->scene_output = wlr_scene_output_create(server->scene, wlr_output);
+	if (!output->scene_output) {
+		wlr_log(WLR_ERROR, "Failed to allocate scene output");
+		wl_event_source_remove(output->fallback_frame_timer);
+		wlr_output->data = NULL;
+		free(output);
+		return;
+	}
 
 	wl_list_insert(&server->outputs, &output->link);
 
 	output->commit.notify = handle_output_commit;
 	wl_signal_add(&wlr_output->events.commit, &output->commit);
+	output->needs_frame.notify = handle_output_needs_frame;
+	wl_signal_add(&wlr_output->events.needs_frame, &output->needs_frame);
 	output->request_state.notify = handle_output_request_state;
 	wl_signal_add(&wlr_output->events.request_state, &output->request_state);
 	output->destroy.notify = handle_output_destroy;
 	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
 	output->frame.notify = handle_output_frame;
 	wl_signal_add(&wlr_output->events.frame, &output->frame);
-
-	output->scene_output = wlr_scene_output_create(server->scene, wlr_output);
-	if (!output->scene_output) {
-		wlr_log(WLR_ERROR, "Failed to allocate scene output");
-		return;
-	}
 
 	struct wlr_output_state state = {0};
 	wlr_output_state_set_enabled(&state, true);
@@ -593,13 +561,11 @@ handle_new_output(struct wl_listener *listener, void *data)
 		}
 	}
 	if (host_scale > 1.0f && output->host_viewport) {
-		float output_scale = agentseat_physical_layout() ? 1.0f : host_scale;
-		wlr_output_state_set_scale(&state, output_scale);
+		wlr_output_state_set_scale(&state, application_output_scale(host_scale));
 		wlr_log(WLR_INFO,
-			"AgentSeat physical buffer: %.3fx host scale, %.3fx nested scale via wp_viewporter",
-			host_scale, output_scale);
+			"AgentSeat native buffer: %.3fx physical pixels with %.3fx logical output scale",
+			host_scale, application_output_scale(host_scale));
 	}
-
 	if (server->output_mode == CAGE_MULTI_OUTPUT_MODE_LAST && wl_list_length(&server->outputs) > 1) {
 		struct cg_output *next = wl_container_of(output->link.next, next, link);
 		output_disable(next);
@@ -614,8 +580,6 @@ handle_new_output(struct wl_listener *listener, void *data)
 
 	wlr_log(WLR_DEBUG, "Enabling new output %s", wlr_output->name);
 	if (wlr_output_commit_state(wlr_output, &state)) {
-		output->fit_max_width = wlr_output->width;
-		output->fit_max_height = wlr_output->height;
 		output_layout_add_auto(output);
 	}
 
@@ -634,7 +598,8 @@ output_set_window_title(struct cg_output *output, const char *title)
 	}
 
 	if (wlr_output_is_wl(wlr_output)) {
-		wlr_wl_output_set_title(wlr_output, title);
+		if (!host_window_set_title(output->server, wlr_output, title))
+			wlr_wl_output_set_title(wlr_output, title);
 #if WLR_HAS_X11_BACKEND
 	} else if (wlr_output_is_x11(wlr_output)) {
 		wlr_x11_output_set_title(wlr_output, title);

@@ -15,6 +15,9 @@
 #define DEFAULT_XCURSOR "left_ptr"
 #define XCURSOR_SIZE 20
 
+#define CG_KEY_COUNT 768
+#define CG_BUTTON_COUNT 1024
+
 struct cg_seat {
 	struct wlr_seat *seat;
 	struct cg_server *server;
@@ -22,6 +25,9 @@ struct cg_seat {
 
 	struct wl_list keyboards;
 	struct wl_list keyboard_groups;
+	struct xkb_keymap *parent_keymap;
+	bool parent_repeat_known;
+	int parent_repeat_rate, parent_repeat_delay;
 	struct wl_list pointers;
 	struct wl_list touch;
 	struct wl_listener new_input;
@@ -50,6 +56,25 @@ struct cg_seat {
 	struct wl_listener request_set_selection;
 	struct wl_listener request_set_primary_selection;
 
+	/* The compositor is the authority for the final virtual-input gate. */
+	struct cg_scene *scene;
+	struct cg_clipboard *clipboard;
+	struct wl_global *control_global;
+	struct wl_resource *control_resource;
+	struct wl_event_source *control_timer;
+	struct wl_event_source *hold_timer;
+	unsigned hold_timeout_ms;
+	uint64_t key_deadlines[CG_KEY_COUNT];
+	uint64_t button_deadlines[CG_BUTTON_COUNT];
+	uint32_t control_epoch;
+	bool control_allowed;
+	uint64_t human_until_msec;
+	unsigned human_grace_ms;
+	bool forwarded_keys[CG_KEY_COUNT];
+	bool forwarded_buttons[CG_BUTTON_COUNT];
+	/* Ownership of the first effective press which created the pointer grab. */
+	bool pointer_grab_virtual;
+
 	/* AgentSeat's optional human-priority activity channel. */
 	int activity_fd;
 	uint64_t last_activity_msec;
@@ -57,6 +82,7 @@ struct cg_seat {
 
 	/* Interactive move is accepted only for AgentSeat's in-window overlay. */
 	struct cg_view *moving_view;
+	uint32_t last_application_focus_id;
 	double move_offset_x;
 	double move_offset_y;
 	double pointer_press_x;
@@ -65,11 +91,15 @@ struct cg_seat {
 
 struct cg_keyboard_group {
 	struct wlr_keyboard_group *wlr_group;
+	struct wlr_keyboard *source;
+	struct wl_listener source_destroy;
 	struct cg_seat *seat;
 	struct wl_listener key;
 	struct wl_listener modifiers;
 	struct wl_list link; // cg_seat::keyboard_groups
 	bool is_virtual;
+	struct wl_client *client;
+	bool held_keys[CG_KEY_COUNT];
 };
 
 struct cg_pointer {
@@ -77,6 +107,10 @@ struct cg_pointer {
 	struct cg_seat *seat;
 	struct wlr_pointer *pointer;
 	bool is_virtual;
+	struct wl_client *client;
+	bool held_buttons[CG_BUTTON_COUNT];
+	bool has_host_position;
+	double host_x, host_y;
 
 	struct wl_listener destroy;
 };
@@ -103,7 +137,10 @@ struct cg_drag_icon {
 
 struct cg_seat *seat_create(struct cg_server *server, struct wlr_backend *backend);
 void seat_destroy(struct cg_seat *seat);
+void seat_set_parent_keymap(struct cg_seat *, struct xkb_keymap *);
+void seat_set_parent_repeat(struct cg_seat *, int rate, int delay);
 struct cg_view *seat_get_focus(struct cg_seat *seat);
+void seat_close_focused_application(struct cg_seat *seat);
 void seat_set_focus(struct cg_seat *seat, struct cg_view *view);
 void seat_center_cursor(struct cg_seat *seat);
 

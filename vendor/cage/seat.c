@@ -24,6 +24,8 @@
 #include <wlr/backend.h>
 #include <wlr/backend/multi.h>
 #include <wlr/backend/session.h>
+#include <wlr/backend/wayland.h>
+#include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
@@ -41,7 +43,10 @@
 #include <wlr/xwayland.h>
 #endif
 
+#include "agentseat-control-v1-server-protocol.h"
 #include "output.h"
+#include "agentseat-scene.h"
+#include "agentseat-clipboard.h"
 #include "seat.h"
 #include "server.h"
 #include "view.h"
@@ -59,9 +64,300 @@ monotonic_msec(void)
 	return (uint64_t)now.tv_sec * 1000U + (uint64_t)now.tv_nsec / 1000000U;
 }
 
+static bool
+key_held(struct cg_seat *seat, uint32_t key)
+{
+	struct cg_keyboard_group *group;
+	wl_list_for_each (group, &seat->keyboard_groups, link) {
+		if (group->held_keys[key])
+			return true;
+	}
+	return false;
+}
+
+static bool
+button_held(struct cg_seat *seat, uint32_t button)
+{
+	struct cg_pointer *pointer;
+	wl_list_for_each (pointer, &seat->pointers, link) {
+		if (pointer->held_buttons[button])
+			return true;
+	}
+	return false;
+}
+
+static bool
+human_held(struct cg_seat *seat)
+{
+	struct cg_keyboard_group *group;
+	wl_list_for_each (group, &seat->keyboard_groups, link) {
+		if (!group->is_virtual && group->wlr_group->keyboard.modifiers.depressed)
+			return true;
+		if (!group->is_virtual)
+			for (size_t key = 0; key < CG_KEY_COUNT; ++key)
+				if (group->held_keys[key])
+					return true;
+	}
+	struct cg_pointer *pointer;
+	wl_list_for_each (pointer, &seat->pointers, link) {
+		if (!pointer->is_virtual)
+			for (size_t button = 0; button < CG_BUTTON_COUNT; ++button)
+				if (pointer->held_buttons[button])
+					return true;
+	}
+	return !wl_list_empty(&seat->seat->touch_state.touch_points);
+}
+
+static void
+control_send_state(struct cg_seat *seat)
+{
+	uint64_t now = monotonic_msec();
+	uint32_t remaining = seat->human_until_msec > now ? (uint32_t)(seat->human_until_msec - now) : 0;
+	if (seat->control_resource)
+		agentseat_control_v1_send_state(seat->control_resource, seat->control_epoch,
+			seat->control_allowed, remaining, human_held(seat));
+}
+
+/* Wayland backends may deliver modifiers before the matching key event.
+ * Preserve that already-depressed human modifier until the key event makes
+ * ownership precise. This is a hint for releases only, never an input grant. */
+static bool
+physical_modifier_hint(struct cg_seat *seat, uint32_t key)
+{
+	struct cg_keyboard_group *group;
+	wl_list_for_each (group, &seat->keyboard_groups, link) {
+		struct wlr_keyboard *keyboard = &group->wlr_group->keyboard;
+		if (group->is_virtual || !keyboard->modifiers.depressed || !keyboard->keymap)
+			continue;
+		struct xkb_state *probe = xkb_state_new(keyboard->keymap);
+		if (!probe)
+			continue;
+		xkb_state_update_key(probe, key + 8, XKB_KEY_DOWN);
+		xkb_mod_mask_t mask = xkb_state_serialize_mods(probe, XKB_STATE_MODS_DEPRESSED);
+		xkb_state_unref(probe);
+		if (mask & keyboard->modifiers.depressed)
+			return true;
+	}
+	return false;
+}
+
+static void
+release_orphaned_keys(struct cg_seat *seat, bool modifier_hints)
+{
+	for (uint32_t key = 0; key < CG_KEY_COUNT; ++key) {
+		if (seat->forwarded_keys[key] && !key_held(seat, key) &&
+		    !(modifier_hints && physical_modifier_hint(seat, key))) {
+			wlr_seat_keyboard_notify_key(seat->seat, (uint32_t)monotonic_msec(), key,
+				WL_KEYBOARD_KEY_STATE_RELEASED);
+			seat->forwarded_keys[key] = false;
+		}
+	}
+}
+
+static void
+control_revoke(struct cg_seat *seat)
+{
+	seat->control_allowed = false;
+	cg_clipboard_clear(seat);
+	/* Releasing a drag's button is a DROP, not a cancellation. End only the
+	 * drag rooted in our virtual press before releasing orphaned buttons.
+	 * Physical pointer/touch drags keep their application-owned grabs. */
+	struct wlr_drag *drag = seat->seat->drag;
+	if (seat->pointer_grab_virtual && drag &&
+	    drag->grab_type == WLR_DRAG_GRAB_KEYBOARD_POINTER &&
+	    seat->seat->pointer_state.grab == &drag->pointer_grab) {
+		/* Cancelling the source also notifies the application. Ending only the
+		 * pointer grab can leave it waiting for a data-source completion. */
+		if (drag->source)
+			wlr_data_source_destroy(drag->source);
+		else
+			wlr_seat_pointer_end_grab(seat->seat);
+	}
+	seat->pointer_grab_virtual = false;
+	memset(seat->key_deadlines, 0, sizeof(seat->key_deadlines));
+	memset(seat->button_deadlines, 0, sizeof(seat->button_deadlines));
+	if (seat->hold_timer)
+		wl_event_source_timer_update(seat->hold_timer, 0);
+	if (seat->control_epoch < UINT32_MAX)
+		seat->control_epoch++;
+	/* Forget only input actually owned by virtual devices. Human devices may
+	 * still hold the same key/button; preserve their effective state. */
+	struct cg_keyboard_group *group;
+	struct wlr_keyboard *physical_keyboard = NULL;
+	wl_list_for_each (group, &seat->keyboard_groups, link) {
+		if (group->is_virtual)
+			memset(group->held_keys, 0, sizeof(group->held_keys));
+		else if (!physical_keyboard)
+			physical_keyboard = &group->wlr_group->keyboard;
+	}
+	uint32_t time = (uint32_t)monotonic_msec();
+	release_orphaned_keys(seat, true);
+	struct wlr_keyboard_modifiers empty = {0};
+	if (physical_keyboard)
+		wlr_seat_set_keyboard(seat->seat, physical_keyboard);
+	wlr_seat_keyboard_notify_modifiers(seat->seat, physical_keyboard ? &physical_keyboard->modifiers : &empty);
+	struct cg_pointer *pointer;
+	wl_list_for_each (pointer, &seat->pointers, link) {
+		if (pointer->is_virtual)
+			memset(pointer->held_buttons, 0, sizeof(pointer->held_buttons));
+	}
+	for (uint32_t button = 0; button < CG_BUTTON_COUNT; ++button) {
+		if (seat->forwarded_buttons[button] && !button_held(seat, button)) {
+			wlr_seat_pointer_notify_button(seat->seat, time, button, WL_POINTER_BUTTON_STATE_RELEASED);
+			seat->forwarded_buttons[button] = false;
+		}
+	}
+	wlr_seat_pointer_notify_frame(seat->seat);
+	view_save_overlay_position(seat->moving_view);
+	seat->moving_view = NULL;
+}
+
+static void
+schedule_hold_timeout(struct cg_seat *seat)
+{
+	uint64_t earliest = UINT64_MAX;
+	for (size_t i = 0; i < CG_KEY_COUNT; ++i)
+		if (seat->key_deadlines[i] && seat->key_deadlines[i] < earliest)
+			earliest = seat->key_deadlines[i];
+	for (size_t i = 0; i < CG_BUTTON_COUNT; ++i)
+		if (seat->button_deadlines[i] && seat->button_deadlines[i] < earliest)
+			earliest = seat->button_deadlines[i];
+	uint64_t now = monotonic_msec();
+	int delay = earliest == UINT64_MAX ? 0 : earliest <= now ? 1 : (int)(earliest - now);
+	wl_event_source_timer_update(seat->hold_timer, delay);
+}
+
+static int
+hold_timeout_expired(void *data)
+{
+	struct cg_seat *seat = data;
+	control_revoke(seat);
+	control_send_state(seat);
+	return 0;
+}
+
+static void
+control_hold_timeout_request(struct wl_client *client, struct wl_resource *resource, uint32_t milliseconds)
+{
+	struct cg_seat *seat = wl_resource_get_user_data(resource);
+	seat->hold_timeout_ms = milliseconds < 100 ? 100 : milliseconds > 10000 ? 10000 : milliseconds;
+}
+
+static bool
+control_allows(struct cg_seat *seat, struct wl_client *client)
+{
+	return seat->control_allowed && seat->control_resource &&
+		wl_resource_get_client(seat->control_resource) == client;
+}
+
+static void
+control_destroy_request(struct wl_client *client, struct wl_resource *resource)
+{
+	wl_resource_destroy(resource);
+}
+
+static void
+control_acquire_request(struct wl_client *client, struct wl_resource *resource, uint32_t epoch)
+{
+	struct cg_seat *seat = wl_resource_get_user_data(resource);
+	bool allowed = epoch == seat->control_epoch && epoch != UINT32_MAX &&
+		monotonic_msec() >= seat->human_until_msec && !human_held(seat);
+	bool changed = allowed != seat->control_allowed;
+	seat->control_allowed = allowed;
+	if (!allowed) cg_clipboard_clear(seat);
+	if (changed || !allowed)
+		control_send_state(seat);
+}
+
+static void
+control_acquire_geometry_request(struct wl_client *client, struct wl_resource *resource,
+    uint32_t epoch, uint32_t geometry)
+{
+    struct cg_seat *seat = wl_resource_get_user_data(resource);
+    if (geometry != cg_scene_current_version(seat)) {
+        control_revoke(seat);
+        control_send_state(seat);
+        return;
+    }
+    control_acquire_request(client, resource, epoch);
+}
+
+static void
+control_revoke_request(struct wl_client *client, struct wl_resource *resource)
+{
+	struct cg_seat *seat = wl_resource_get_user_data(resource);
+	control_revoke(seat);
+	control_send_state(seat);
+}
+
+static void control_clipboard_offer_request(struct wl_client *client, struct wl_resource *resource,
+    uint32_t epoch, uint32_t token, int fd, uint32_t size)
+{
+    struct cg_seat *seat = wl_resource_get_user_data(resource);
+    if (!control_allows(seat, client)) {
+        close(fd); agentseat_control_v1_send_clipboard_offered(resource, token, 1); return;
+    }
+    cg_clipboard_offer(seat, resource, epoch, token, fd, size);
+}
+
+static const struct agentseat_control_v1_interface control_implementation = {
+	.destroy = control_destroy_request,
+	.acquire = control_acquire_request,
+	.acquire_geometry = control_acquire_geometry_request,
+	.revoke = control_revoke_request,
+	.hold_timeout = control_hold_timeout_request,
+	.scene_snapshot = cg_scene_snapshot,
+	.window_action = cg_scene_window_action,
+	.render_once = cg_scene_render_once,
+	.clipboard_offer = control_clipboard_offer_request,
+};
+
+static void
+control_resource_destroy(struct wl_resource *resource)
+{
+	struct cg_seat *seat = wl_resource_get_user_data(resource);
+	seat->control_resource = NULL;
+	control_revoke(seat);
+}
+
+static void
+control_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id)
+{
+	struct cg_seat *seat = data;
+	struct wl_resource *resource = wl_resource_create(client, &agentseat_control_v1_interface, version > 3 ? 3 : version, id);
+	if (!resource) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	if (seat->control_resource) {
+		wl_resource_post_error(resource, AGENTSEAT_CONTROL_V1_ERROR_ALREADY_OWNED, "Input gate already has an owner");
+		wl_resource_destroy(resource);
+		return;
+	}
+	seat->control_resource = resource;
+	wl_resource_set_implementation(resource, &control_implementation, seat, control_resource_destroy);
+	control_send_state(seat);
+	cg_scene_snapshot(client, resource);
+}
+
+static int
+control_quiet_timer(void *data)
+{
+	control_send_state(data);
+	return 0;
+}
+
 static void
 report_human_activity(struct cg_seat *seat)
 {
+	uint64_t current = monotonic_msec();
+	bool takeover = seat->control_allowed || current >= seat->human_until_msec;
+	if (takeover)
+		control_revoke(seat);
+	seat->human_until_msec = current + seat->human_grace_ms;
+	wl_event_source_timer_update(seat->control_timer, seat->human_grace_ms ? seat->human_grace_ms : 1);
+	if (takeover || current - seat->last_activity_msec >= 32)
+		control_send_state(seat);
 	if (seat->activity_fd < 0 || seat->activity_socket_path[0] == '\0') {
 		return;
 	}
@@ -92,23 +388,22 @@ pointer_is_virtual(struct cg_seat *seat, struct wlr_pointer *wlr_pointer)
 	return false;
 }
 
-static float
-agentseat_host_scale(void)
+static struct cg_pointer *
+tracked_pointer(struct cg_seat *seat, struct wlr_pointer *device)
 {
-	const char *value = getenv("AGENTSEAT_HOST_SCALE");
-	if (!value || !value[0]) {
-		return 1.0f;
+	struct cg_pointer *pointer;
+	wl_list_for_each (pointer, &seat->pointers, link) {
+		if (pointer->pointer == device)
+			return pointer;
 	}
-	char *end = NULL;
-	float scale = strtof(value, &end);
-	return end && end[0] == '\0' && scale >= 1.0f && scale <= 4.0f ? scale : 1.0f;
+	return NULL;
 }
 
 static bool
-agentseat_physical_layout(void)
+pointer_allowed(struct cg_seat *seat, struct wlr_pointer *device)
 {
-	const char *value = getenv("AGENTSEAT_PHYSICAL_LAYOUT");
-	return value && strcmp(value, "1") == 0;
+	struct cg_pointer *pointer = tracked_pointer(seat, device);
+	return pointer && (!pointer->is_virtual || control_allows(seat, pointer->client));
 }
 
 static float
@@ -117,14 +412,11 @@ host_pointer_coordinate_scale(struct cg_seat *seat, struct wlr_pointer *wlr_poin
 	if (pointer_is_virtual(seat, wlr_pointer)) {
 		return 1.0f;
 	}
-	if (agentseat_physical_layout()) {
-		return agentseat_host_scale();
-	}
 	struct cg_output *output;
 	wl_list_for_each (output, &seat->server->outputs, link) {
 		const char *output_name = wlr_pointer->output_name;
 		if (!output_name || strcmp(output_name, output->wlr_output->name) == 0) {
-			return output->wlr_output->scale;
+			return output->host_coordinate_scale;
 		}
 	}
 	return 1.0f;
@@ -289,7 +581,7 @@ handle_pointer_destroy(struct wl_listener *listener, void *data)
 }
 
 static void
-handle_new_pointer(struct cg_seat *seat, struct wlr_pointer *wlr_pointer, bool is_virtual)
+handle_new_pointer(struct cg_seat *seat, struct wlr_pointer *wlr_pointer, bool is_virtual, struct wl_client *client)
 {
 	struct cg_pointer *pointer = calloc(1, sizeof(struct cg_pointer));
 	if (!pointer) {
@@ -300,6 +592,7 @@ handle_new_pointer(struct cg_seat *seat, struct wlr_pointer *wlr_pointer, bool i
 	pointer->seat = seat;
 	pointer->pointer = wlr_pointer;
 	pointer->is_virtual = is_virtual;
+	pointer->client = client;
 	wlr_cursor_attach_input_device(seat->cursor, &wlr_pointer->base);
 
 	wl_list_insert(&seat->pointers, &pointer->link);
@@ -326,7 +619,7 @@ handle_virtual_pointer(struct wl_listener *listener, void *data)
 		wlr_pointer->output_name = strdup(event->suggested_output->name);
 	}
 	/* TODO: event->suggested_seat should be checked if we handle multiple seats */
-	handle_new_pointer(seat, wlr_pointer, true);
+	handle_new_pointer(seat, wlr_pointer, true, wl_resource_get_client(pointer->resource));
 	update_capabilities(seat);
 }
 
@@ -384,10 +677,14 @@ handle_key_event(struct wlr_keyboard *keyboard, struct cg_seat *seat, void *data
 		}
 	}
 
-	if (!handled) {
-		/* Otherwise, we pass it along to the client. */
+	if (!handled && event->keycode < CG_KEY_COUNT) {
+		bool down = key_held(seat, event->keycode);
 		wlr_seat_set_keyboard(seat->seat, keyboard);
-		wlr_seat_keyboard_notify_key(seat->seat, event->time_msec, event->keycode, event->state);
+		if (seat->forwarded_keys[event->keycode] != down) {
+			wlr_seat_keyboard_notify_key(seat->seat, event->time_msec, event->keycode,
+				down ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
+			seat->forwarded_keys[event->keycode] = down;
+		}
 	}
 
 	wlr_idle_notifier_v1_notify_activity(seat->server->idle, seat->seat);
@@ -397,8 +694,22 @@ static void
 handle_keyboard_group_key(struct wl_listener *listener, void *data)
 {
 	struct cg_keyboard_group *cg_group = wl_container_of(listener, cg_group, key);
+	struct wlr_keyboard_key_event *event = data;
+	if (event->keycode >= CG_KEY_COUNT ||
+	    (cg_group->is_virtual && !control_allows(cg_group->seat, cg_group->client)))
+		return;
+	if (cg_group->is_virtual) {
+		uint64_t *deadline = &cg_group->seat->key_deadlines[event->keycode];
+		if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED)
+			*deadline = 0;
+		else if (!*deadline)
+			*deadline = monotonic_msec() + cg_group->seat->hold_timeout_ms;
+		schedule_hold_timeout(cg_group->seat);
+	}
+	cg_group->held_keys[event->keycode] = event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
 	if (!cg_group->is_virtual) {
 		report_human_activity(cg_group->seat);
+		release_orphaned_keys(cg_group->seat, false);
 	}
 	handle_key_event(&cg_group->wlr_group->keyboard, cg_group->seat, data);
 }
@@ -407,40 +718,69 @@ static void
 handle_keyboard_group_modifiers(struct wl_listener *listener, void *data)
 {
 	struct cg_keyboard_group *group = wl_container_of(listener, group, modifiers);
+	if (group->is_virtual && !control_allows(group->seat, group->client))
+		return;
 	if (!group->is_virtual) {
 		report_human_activity(group->seat);
+		release_orphaned_keys(group->seat, true);
 	}
 	handle_modifier_event(&group->wlr_group->keyboard, group->seat);
 }
 
 static void
+keyboard_source_destroyed(struct wl_listener *listener, void *data)
+{
+	struct cg_keyboard_group *group = wl_container_of(listener, group, source_destroy);
+	group->source = NULL;
+	wl_list_remove(&group->source_destroy.link);
+	wl_list_init(&group->source_destroy.link);
+}
+
+void
+seat_set_parent_keymap(struct cg_seat *seat, struct xkb_keymap *keymap)
+{
+	xkb_keymap_unref(seat->parent_keymap);
+	seat->parent_keymap = xkb_keymap_ref(keymap);
+	struct cg_keyboard_group *group;
+	wl_list_for_each(group, &seat->keyboard_groups, link) {
+		if (!group->is_virtual && group->source && wlr_input_device_is_wl(&group->source->base))
+			wlr_keyboard_set_keymap(group->source, keymap);
+	}
+}
+
+void
+seat_set_parent_repeat(struct cg_seat *seat, int rate, int delay)
+{
+	if (rate < 0 || delay < 0)
+		return;
+	seat->parent_repeat_known = true;
+	seat->parent_repeat_rate = rate;
+	seat->parent_repeat_delay = delay;
+	struct cg_keyboard_group *group;
+	wl_list_for_each(group, &seat->keyboard_groups, link) {
+		if (!group->is_virtual && group->source && wlr_input_device_is_wl(&group->source->base))
+			wlr_keyboard_set_repeat_info(group->source, rate, delay);
+	}
+}
+
+static void
 cg_keyboard_group_add(struct wlr_keyboard *keyboard, struct cg_seat *seat, bool virtual)
 {
-	/* We apparently should not group virtual keyboards,
-	 * so create a new group with it
-	 */
-	if (!virtual) {
-		struct cg_keyboard_group *group;
-		wl_list_for_each (group, &seat->keyboard_groups, link) {
-			if (group->is_virtual)
-				continue;
-			struct wlr_keyboard_group *wlr_group = group->wlr_group;
-			if (wlr_keyboard_group_add_keyboard(wlr_group, keyboard)) {
-				wlr_log(WLR_DEBUG, "Added new keyboard to existing group");
-				return;
-			}
-		}
-	}
-
-	/* This is reached if and only if the keyboard could not be inserted into
-	 * any group */
+	/* Keep each source in its own group. Parent layout changes must never
+	 * rewrite another device's keymap, including the private Agent keyboard. */
 	struct cg_keyboard_group *cg_group = calloc(1, sizeof(struct cg_keyboard_group));
 	if (cg_group == NULL) {
 		wlr_log(WLR_ERROR, "Failed to allocate keyboard group.");
 		return;
 	}
 	cg_group->seat = seat;
+	cg_group->source = keyboard;
+	wl_list_init(&cg_group->source_destroy.link);
 	cg_group->is_virtual = virtual;
+	if (virtual) {
+		struct wlr_virtual_keyboard_v1 *vk = wlr_input_device_get_virtual_keyboard(&keyboard->base);
+		cg_group->client = vk ? wl_resource_get_client(vk->resource) : NULL;
+	}
 	cg_group->wlr_group = wlr_keyboard_group_create();
 	if (cg_group->wlr_group == NULL) {
 		wlr_log(WLR_ERROR, "Failed to create wlr keyboard group.");
@@ -455,7 +795,12 @@ cg_keyboard_group_add(struct wlr_keyboard *keyboard, struct cg_seat *seat, bool 
 
 	wlr_log(WLR_DEBUG, "Created keyboard group");
 
+	wlr_keyboard_notify_modifiers(&cg_group->wlr_group->keyboard,
+		keyboard->modifiers.depressed, keyboard->modifiers.latched,
+		keyboard->modifiers.locked, keyboard->modifiers.group);
 	wlr_keyboard_group_add_keyboard(cg_group->wlr_group, keyboard);
+	cg_group->source_destroy.notify = keyboard_source_destroyed;
+	wl_signal_add(&keyboard->base.events.destroy, &cg_group->source_destroy);
 	wl_list_insert(&seat->keyboard_groups, &cg_group->link);
 
 	wl_signal_add(&cg_group->wlr_group->keyboard.events.key, &cg_group->key);
@@ -475,6 +820,7 @@ cleanup:
 static void
 keyboard_group_destroy(struct cg_keyboard_group *keyboard_group)
 {
+	wl_list_remove(&keyboard_group->source_destroy.link);
 	wl_list_remove(&keyboard_group->key.link);
 	wl_list_remove(&keyboard_group->modifiers.link);
 	wlr_keyboard_group_destroy(keyboard_group->wlr_group);
@@ -485,28 +831,35 @@ keyboard_group_destroy(struct cg_keyboard_group *keyboard_group)
 static void
 handle_new_keyboard(struct cg_seat *seat, struct wlr_keyboard *keyboard, bool virtual)
 {
-	struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-	if (!context) {
-		wlr_log(WLR_ERROR, "Unable to create XKB context");
-		return;
+	if (!virtual && wlr_input_device_is_wl(&keyboard->base)) {
+		if (seat->parent_keymap)
+			wlr_keyboard_set_keymap(keyboard, seat->parent_keymap);
+		if (seat->parent_repeat_known)
+			wlr_keyboard_set_repeat_info(keyboard, seat->parent_repeat_rate, seat->parent_repeat_delay);
 	}
-
-	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
-	if (!keymap) {
-		wlr_log(WLR_ERROR, "Unable to configure keyboard: keymap does not exist");
+	/* Wayland and virtual keyboards already carry their owner's keymap and
+	 * repeat settings. Defaults belong only to unconfigured physical devices. */
+	if (!keyboard->keymap) {
+		struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+		if (!context)
+			return;
+		struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
 		xkb_context_unref(context);
-		return;
+		if (!keymap) {
+			wlr_log(WLR_ERROR, "Unable to configure keyboard: keymap does not exist");
+			return;
+		}
+		wlr_keyboard_set_keymap(keyboard, keymap);
+		xkb_keymap_unref(keymap);
+		if (!virtual)
+			wlr_keyboard_set_repeat_info(keyboard, 25, 600);
 	}
-
-	wlr_keyboard_set_keymap(keyboard, keymap);
-
-	xkb_keymap_unref(keymap);
-	xkb_context_unref(context);
-	wlr_keyboard_set_repeat_info(keyboard, 25, 600);
 
 	cg_keyboard_group_add(keyboard, seat, virtual);
 
-	wlr_seat_set_keyboard(seat->seat, keyboard);
+	struct wlr_virtual_keyboard_v1 *vk = virtual ? wlr_input_device_get_virtual_keyboard(&keyboard->base) : NULL;
+	if (!virtual || (vk && control_allows(seat, wl_resource_get_client(vk->resource))))
+		wlr_seat_set_keyboard(seat->seat, keyboard);
 }
 
 static void
@@ -535,7 +888,7 @@ handle_new_input(struct wl_listener *listener, void *data)
 		handle_new_keyboard(seat, wlr_keyboard_from_input_device(device), false);
 		break;
 	case WLR_INPUT_DEVICE_POINTER:
-		handle_new_pointer(seat, wlr_pointer_from_input_device(device), false);
+		handle_new_pointer(seat, wlr_pointer_from_input_device(device), false, NULL);
 		break;
 	case WLR_INPUT_DEVICE_TOUCH:
 		handle_new_touch(seat, wlr_touch_from_input_device(device));
@@ -694,8 +1047,14 @@ handle_cursor_axis(struct wl_listener *listener, void *data)
 {
 	struct cg_seat *seat = wl_container_of(listener, seat, cursor_axis);
 	struct wlr_pointer_axis_event *event = data;
+	if (!pointer_allowed(seat, event->pointer))
+		return;
 	if (!pointer_is_virtual(seat, event->pointer)) {
-		report_human_activity(seat);
+		/* A wheel gesture must not implicitly seize an active Agent lease. */
+		if (seat->control_allowed)
+			return;
+		if (monotonic_msec() < seat->human_until_msec)
+			report_human_activity(seat);
 	}
 
 	wlr_seat_pointer_notify_axis(seat->seat, event->time_msec, event->orientation, event->delta,
@@ -703,14 +1062,44 @@ handle_cursor_axis(struct wl_listener *listener, void *data)
 	wlr_idle_notifier_v1_notify_activity(seat->server->idle, seat->seat);
 }
 
+static void process_cursor_motion(struct cg_seat *seat, uint32_t time_msec, double dx, double dy,
+                                  double dx_unaccel, double dy_unaccel);
+
 static void
 handle_cursor_button(struct wl_listener *listener, void *data)
 {
 	struct cg_seat *seat = wl_container_of(listener, seat, cursor_button);
 	struct wlr_pointer_button_event *event = data;
-	if (!pointer_is_virtual(seat, event->pointer)) {
-		report_human_activity(seat);
+	if (!pointer_allowed(seat, event->pointer))
+		return;
+	if (event->button >= CG_BUTTON_COUNT)
+		return;
+	struct cg_pointer *pointer = tracked_pointer(seat, event->pointer);
+	if (pointer->is_virtual) {
+		uint64_t *deadline = &seat->button_deadlines[event->button];
+		if (event->state == WL_POINTER_BUTTON_STATE_RELEASED)
+			*deadline = 0;
+		else if (!*deadline)
+			*deadline = monotonic_msec() + seat->hold_timeout_ms;
+		schedule_hold_timeout(seat);
 	}
+	pointer->held_buttons[event->button] = event->state == WL_POINTER_BUTTON_STATE_PRESSED;
+	if (!pointer->is_virtual) {
+		report_human_activity(seat);
+		/* Hover never moves the Agent cursor. A real press first cancels
+		 * Agent input, then restores the human's separately tracked point. */
+		if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && pointer->has_host_position) {
+			wlr_cursor_warp_absolute(seat->cursor, &event->pointer->base, pointer->host_x, pointer->host_y);
+			process_cursor_motion(seat, event->time_msec, 0, 0, 0, 0);
+			/* XWayland commits motion on wl_pointer.frame; place that
+			 * boundary before the press so it uses the restored point. */
+			wlr_seat_pointer_notify_frame(seat->seat);
+		}
+	}
+	bool down = button_held(seat, event->button);
+	if (seat->forwarded_buttons[event->button] == down)
+		return;
+	seat->forwarded_buttons[event->button] = down;
 	if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
 		seat->pointer_press_x = seat->cursor->x;
 		seat->pointer_press_y = seat->cursor->y;
@@ -721,9 +1110,15 @@ handle_cursor_button(struct wl_listener *listener, void *data)
 	/* Focus the surface under a press before delivering the button. This keeps
 	 * the press grab and serial on the same client, which XDG interactive move
 	 * requires for the embedded AgentSeat head. */
+	if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && seat->seat->pointer_state.button_count == 0)
+		seat->pointer_grab_virtual = pointer->is_virtual;
 	wlr_seat_pointer_notify_button(seat->seat, event->time_msec, event->button, event->state);
-	if (event->state == WL_POINTER_BUTTON_STATE_RELEASED)
+	if (seat->seat->pointer_state.button_count == 0)
+		seat->pointer_grab_virtual = false;
+	if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		view_save_overlay_position(seat->moving_view);
 		seat->moving_view = NULL;
+	}
 	wlr_idle_notifier_v1_notify_activity(seat->server->idle, seat->seat);
 }
 
@@ -785,7 +1180,19 @@ process_cursor_motion(struct cg_seat *seat, uint32_t time_msec, double dx, doubl
 	if (!view) {
 		wlr_seat_pointer_clear_focus(wlr_seat);
 	} else {
+		bool entering = wlr_seat->pointer_state.focused_surface != surface;
 		wlr_seat_pointer_notify_enter(wlr_seat, surface, sx, sy);
+#if CAGE_HAS_XWAYLAND
+		/* XWayland needs a motion after re-entering from a native overlay.
+		 * Enter seeds wlroots' duplicate-motion cache, but alone can leave
+		 * the X core button coordinates at (0,0). Invalidate only that cache;
+		 * the app receives one motion at the actual point, never a fake move. */
+		if (entering && view->type == CAGE_XWAYLAND_VIEW &&
+		    wlr_seat->pointer_state.focused_surface == surface)
+			wlr_seat_pointer_warp(wlr_seat, sx + 1.0, sy);
+#else
+		(void)entering;
+#endif
 		wlr_seat_pointer_notify_motion(wlr_seat, time_msec, sx, sy);
 	}
 
@@ -808,14 +1215,21 @@ handle_cursor_motion_absolute(struct wl_listener *listener, void *data)
 {
 	struct cg_seat *seat = wl_container_of(listener, seat, cursor_motion_absolute);
 	struct wlr_pointer_motion_absolute_event *event = data;
-	if (!pointer_is_virtual(seat, event->pointer)) {
-		report_human_activity(seat);
-	}
+	if (!pointer_allowed(seat, event->pointer))
+		return;
 	float coordinate_scale = host_pointer_coordinate_scale(seat, event->pointer);
 	double x = event->x * coordinate_scale;
 	double y = event->y * coordinate_scale;
 	x = x < 0.0 ? 0.0 : (x > 1.0 ? 1.0 : x);
 	y = y < 0.0 ? 0.0 : (y > 1.0 ? 1.0 : y);
+	struct cg_pointer *pointer = tracked_pointer(seat, event->pointer);
+	if (!pointer->is_virtual) {
+		pointer->has_host_position = true;
+		pointer->host_x = x;
+		pointer->host_y = y;
+		if (seat->control_allowed)
+			return;
+	}
 
 	double lx, ly;
 	wlr_cursor_absolute_to_layout_coords(seat->cursor, &event->pointer->base, x, y, &lx, &ly);
@@ -823,7 +1237,13 @@ handle_cursor_motion_absolute(struct wl_listener *listener, void *data)
 	double dy = ly - seat->cursor->y;
 
 	wlr_cursor_warp_absolute(seat->cursor, &event->pointer->base, x, y);
-	process_cursor_motion(seat, event->time_msec, dx, dy, dx, dy);
+	/* Wayland backends deliver absolute position and raw relative motion for
+	 * the same physical movement. Only the absolute event positions the
+	 * ordinary cursor; the relative event is forwarded separately below. */
+	if (wlr_input_device_is_wl(&event->pointer->base))
+		process_cursor_motion(seat, event->time_msec, 0, 0, 0, 0);
+	else
+		process_cursor_motion(seat, event->time_msec, dx, dy, dx, dy);
 	wlr_idle_notifier_v1_notify_activity(seat->server->idle, seat->seat);
 }
 
@@ -832,10 +1252,17 @@ handle_cursor_motion_relative(struct wl_listener *listener, void *data)
 {
 	struct cg_seat *seat = wl_container_of(listener, seat, cursor_motion_relative);
 	struct wlr_pointer_motion_event *event = data;
-	if (!pointer_is_virtual(seat, event->pointer)) {
-		report_human_activity(seat);
-	}
+	if (!pointer_allowed(seat, event->pointer))
+		return;
 
+	if (!pointer_is_virtual(seat, event->pointer) && seat->control_allowed)
+		return;
+	if (wlr_input_device_is_wl(&event->pointer->base)) {
+		wlr_relative_pointer_manager_v1_send_relative_motion(seat->server->relative_pointer_manager, seat->seat,
+			(uint64_t)event->time_msec * 1000, event->delta_x, event->delta_y, event->unaccel_dx, event->unaccel_dy);
+		wlr_idle_notifier_v1_notify_activity(seat->server->idle, seat->seat);
+		return;
+	}
 	wlr_cursor_move(seat->cursor, &event->pointer->base, event->delta_x, event->delta_y);
 	process_cursor_motion(seat, event->time_msec, event->delta_x, event->delta_y, event->unaccel_dx,
 			      event->unaccel_dy);
@@ -953,8 +1380,7 @@ handle_destroy(struct wl_listener *listener, void *data)
 
 	struct cg_keyboard_group *group, *group_tmp;
 	wl_list_for_each_safe (group, group_tmp, &seat->keyboard_groups, link) {
-		wlr_keyboard_group_destroy(group->wlr_group);
-		free(group);
+		keyboard_group_destroy(group);
 	}
 	struct cg_pointer *pointer, *pointer_tmp;
 	wl_list_for_each_safe (pointer, pointer_tmp, &seat->pointers, link) {
@@ -973,6 +1399,7 @@ handle_destroy(struct wl_listener *listener, void *data)
 	if (seat->activity_fd >= 0) {
 		close(seat->activity_fd);
 	}
+	xkb_keymap_unref(seat->parent_keymap);
 	free(seat);
 }
 
@@ -1078,6 +1505,24 @@ seat_create(struct cg_server *server, struct wlr_backend *backend)
 	seat->start_drag.notify = handle_start_drag;
 	wl_signal_add(&seat->seat->events.start_drag, &seat->start_drag);
 
+	seat->scene = cg_scene_create(seat);
+	seat->control_epoch = 1;
+	seat->human_grace_ms = 1500;
+	seat->hold_timeout_ms = 2000;
+	const char *grace = getenv("AGENTSEAT_HUMAN_GRACE_MS");
+	if (grace) {
+		char *end = NULL;
+		unsigned long value = strtoul(grace, &end, 10);
+		if (end != grace && *end == '\0' && value <= 60000)
+			seat->human_grace_ms = (unsigned)value;
+	}
+	seat->hold_timer = wl_event_loop_add_timer(wl_display_get_event_loop(server->wl_display), hold_timeout_expired, seat);
+	seat->control_timer = wl_event_loop_add_timer(wl_display_get_event_loop(server->wl_display), control_quiet_timer, seat);
+	seat->control_global = wl_global_create(server->wl_display, &agentseat_control_v1_interface, 3, seat, control_bind);
+	if (!seat->control_timer || !seat->control_global || !seat->hold_timer || !seat->scene) {
+		seat_destroy(seat);
+		return NULL;
+	}
 	return seat;
 }
 
@@ -1088,6 +1533,16 @@ seat_destroy(struct cg_seat *seat)
 		return;
 	}
 
+	cg_clipboard_clear(seat);
+	cg_scene_destroy(seat);
+	if (seat->control_global)
+		wl_global_destroy(seat->control_global);
+	if (seat->control_resource)
+		wl_resource_destroy(seat->control_resource);
+	if (seat->control_timer)
+		wl_event_source_remove(seat->control_timer);
+	if (seat->hold_timer)
+		wl_event_source_remove(seat->hold_timer);
 	wl_list_remove(&seat->request_start_drag.link);
 	wl_list_remove(&seat->start_drag.link);
 
@@ -1112,13 +1567,38 @@ seat_get_focus(struct cg_seat *seat)
 }
 
 void
+seat_close_focused_application(struct cg_seat *seat)
+{
+	struct cg_view *focused = seat_get_focus(seat);
+	uint32_t target = focused && !view_is_agentseat_overlay(focused)
+		? focused->agentseat_id : seat->last_application_focus_id;
+	/* A parent close is a human window-management action, even while Agent input
+	 * is paused. Revoke any in-flight Agent input before asking the client. */
+	report_human_activity(seat);
+	/* Resolve the saved identity among mapped views; never use a stale pointer
+	 * or let HUD focus silently select a different application window. */
+	struct cg_view *view;
+	wl_list_for_each (view, &seat->server->views, link) {
+		if (view->agentseat_id == target && view->wlr_surface && !view_is_agentseat_overlay(view)) {
+			wlr_log(WLR_INFO, "Parent close forwarded to application window %u", target);
+			view->impl->close(view);
+			return;
+		}
+	}
+}
+
+void
 seat_set_focus(struct cg_seat *seat, struct cg_view *view)
 {
 	struct cg_server *server = seat->server;
 	struct wlr_seat *wlr_seat = seat->seat;
 	struct cg_view *prev_view = seat_get_focus(seat);
 
-	if (!view || prev_view == view) {
+	if (!view)
+		return;
+	if (prev_view == view) {
+		if (!view_is_agentseat_overlay(view))
+			seat->last_application_focus_id = view->agentseat_id;
 		return;
 	}
 
@@ -1143,6 +1623,8 @@ seat_set_focus(struct cg_seat *seat, struct cg_view *view)
 	}
 
 	view_activate(view, true);
+	if (!view_is_agentseat_overlay(view))
+		seat->last_application_focus_id = view->agentseat_id;
 	char *title = view_get_title(view);
 	struct cg_output *output;
 	wl_list_for_each (output, &server->outputs, link) {
@@ -1159,6 +1641,8 @@ seat_set_focus(struct cg_seat *seat, struct cg_view *view)
 	}
 
 	process_cursor_motion(seat, -1, 0, 0, 0, 0);
+	wlr_seat_pointer_notify_frame(wlr_seat);
+	cg_scene_changed(seat);
 }
 
 void

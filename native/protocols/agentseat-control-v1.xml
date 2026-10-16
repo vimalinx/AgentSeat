@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="agentseat_control_v1">
+  <copyright>Copyright 2026 AgentSeat contributors. MIT license.</copyright>
+  <interface name="agentseat_control_v1" version="3">
+    <description summary="private microhost input delivery gate">
+      Internal AgentSeat protocol. Exactly one Wayland client may own the gate.
+      Virtual input is accepted only from this same client while granted.
+      Acquire and subsequent virtual input use the same Wayland connection,
+      so an old acquire/input sequence cannot overtake a newer acquire.
+      Human activity revokes delivery immediately at the compositor and advances
+      the epoch. The quiet period never automatically restores a grant.
+      This is an operation-ordering boundary, not protection from malicious
+      applications running with the same user privileges.
+    </description>
+    <enum name="error">
+      <entry name="already_owned" value="0" summary="another client owns the input gate"/>
+    </enum>
+    <request name="destroy" type="destructor"/>
+    <request name="acquire">
+      <arg name="expected_epoch" type="uint"/>
+    </request>
+    <request name="revoke"/>
+    <request name="hold_timeout">
+      <description summary="bound newly pressed virtual input">
+        Each new virtual key/button press has an absolute deadline. Repeated
+        acquire calls cannot extend an existing hold. Expiry revokes the gate.
+      </description>
+      <arg name="milliseconds" type="uint"/>
+    </request>
+    <request name="scene_snapshot"/>
+    <request name="window_action">
+      <description summary="operate one mapped application window">
+        Actions: 1 focus, 2 move, 3 resize, 4 request close. A successful close
+        acknowledgement means delivery to the client, not destruction; the
+        application retains its save/cancel behavior. Unknown actions reject.
+      </description>
+      <arg name="epoch" type="uint"/>
+      <arg name="token" type="uint"/>
+      <arg name="window_id" type="uint"/>
+      <arg name="action" type="uint"/>
+      <arg name="first" type="int"/>
+      <arg name="second" type="int"/>
+    </request>
+    <request name="render_once"/>
+    <event name="scene_begin"><arg name="version" type="uint"/></event>
+    <event name="window_info">
+      <arg name="id" type="uint"/><arg name="parent_id" type="uint"/>
+      <arg name="pid" type="uint"/><arg name="flags" type="uint"/>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="title" type="string"/><arg name="app_id" type="string"/>
+    </event>
+    <event name="scene_done">
+      <arg name="version" type="uint"/><arg name="focused_id" type="uint"/>
+      <arg name="logical_width" type="int"/><arg name="logical_height" type="int"/>
+      <arg name="pixel_width" type="int"/><arg name="pixel_height" type="int"/>
+      <arg name="scale_120" type="uint"/><arg name="truncated" type="uint"/>
+    </event>
+    <event name="window_action_done">
+      <arg name="token" type="uint"/><arg name="status" type="uint"/>
+    </event>
+    <event name="state">
+      <arg name="epoch" type="uint"/>
+      <arg name="allowed" type="uint"/>
+      <arg name="human_quiet_ms" type="uint"/>
+      <arg name="human_held" type="uint"/>
+    </event>
+    <request name="acquire_geometry" since="2">
+      <arg name="expected_epoch" type="uint"/>
+      <arg name="expected_geometry" type="uint"/>
+    </request>
+    <request name="clipboard_offer" since="3">
+      <description summary="bounded private clipboard under the input gate">
+        The sealed fd holds at most 32768 UTF-8 bytes. Selection expires after
+        ten seconds or any revocation. Transfer is not application insertion.
+      </description>
+      <arg name="epoch" type="uint"/><arg name="token" type="uint"/>
+      <arg name="payload" type="fd"/><arg name="size" type="uint"/>
+    </request>
+    <event name="clipboard_offered" since="3">
+      <arg name="token" type="uint"/><arg name="status" type="uint"/>
+    </event>
+    <event name="clipboard_transfer" since="3">
+      <arg name="token" type="uint"/><arg name="bytes" type="uint"/>
+    </event>
+  </interface>
+</protocol>

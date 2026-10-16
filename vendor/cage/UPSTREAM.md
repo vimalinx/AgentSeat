@@ -12,21 +12,32 @@ support. Local changes are deliberately scoped to the collaboration wrapper:
 - emit a mode-0600 readiness receipt after the application surface maps;
 - render all outputs on `SIGUSR1` so standard `wlr-screencopy` can capture an
   application while the outer host window is on an inactive workspace;
+- preserve parent-owned logical geometry while rendering the nested output at
+  the target monitor's physical resolution through `wp_viewporter`;
+- expose standard fractional-scale and viewporter protocols inside the private
+  compositor so native clients render at the physical pixel density without an
+  application-specific zoom override;
+- size the primary application surface from the parent-owned tiled output while
+  preserving natural transient-dialog geometry;
+- run a demand-driven fallback frame timer only when an inactive parent stops
+  delivering frames and the private scene still needs one;
 - own and terminate the launched application's process group on shutdown;
 - route virtual input to the focused application surface, including the
   private XWayland single-app root-surface case.
-- preserve application-requested top-level and dialog geometry, honor managed
-  XWayland configure requests, center transient children on their parent, and
-  constrain only surfaces which exceed the private output;
-- fit the nested output to the largest mapped application surface and publish a
-  private mode-0600 size receipt so the AgentSeat controller can keep its one
-  known floating host window free of desktop-sized black canvas;
+- fill the parent-owned tiled output with the primary application surface,
+  while preserving natural transient-dialog geometry and centering transients
+  on their parent;
+- leave outer sizing and tiling to Hyprland instead of publishing an
+  application-size receipt or forcing the host window to float;
 - keep mapped GUI surfaces alive when a short-lived launcher hands work to a
   resident process, while retaining bounded failed-launch cleanup and owned
   process-group teardown;
 - expose current and legacy Wayland data-control managers only on the private
-  micro-host socket so one-shot Unicode clipboard offers do not require a host
-  input serial or touch the host clipboard;
+  micro-host socket for private application clipboard support without host
+  input serials or access to the host clipboard;
+- publish bounded, multi-read Agent clipboard sources through the same
+  epoch-checked control gate as virtual input, with nonblocking receive-pipe
+  writes and cleanup on takeover, timeout, replacement and controller loss;
 - classify physical and virtual micro-host input devices and emit a throttled
   local datagram only for physical activity, enabling AgentSeat's human-priority
   arbitration without observing or modifying the host compositor;

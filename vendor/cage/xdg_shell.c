@@ -20,6 +20,7 @@
 #include "seat.h"
 #include "view.h"
 #include "xdg_shell.h"
+#include "agentseat-scene.h"
 
 static void
 xdg_decoration_set_mode(struct cg_xdg_decoration *xdg_decoration)
@@ -181,8 +182,10 @@ static void
 configure(struct cg_view *view, int width, int height, bool maximized)
 {
 	struct cg_xdg_shell_view *xdg_shell_view = xdg_shell_view_from_view(view);
+	bool fill_output = view == view->server->primary_view;
 	wlr_xdg_toplevel_set_size(xdg_shell_view->xdg_toplevel, width, height);
-	wlr_xdg_toplevel_set_maximized(xdg_shell_view->xdg_toplevel, maximized);
+	wlr_xdg_toplevel_set_maximized(xdg_shell_view->xdg_toplevel, fill_output ? false : maximized);
+	wlr_xdg_toplevel_set_fullscreen(xdg_shell_view->xdg_toplevel, fill_output);
 }
 
 static void
@@ -216,7 +219,8 @@ static void
 handle_xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *data)
 {
 	struct cg_xdg_shell_view *xdg_shell_view = wl_container_of(listener, xdg_shell_view, request_fullscreen);
-	bool fullscreen = xdg_shell_view->xdg_toplevel->requested.fullscreen;
+	bool fullscreen = xdg_shell_view->view.server->primary_view == &xdg_shell_view->view ||
+		xdg_shell_view->xdg_toplevel->requested.fullscreen;
 
 	if (!xdg_shell_view->xdg_toplevel->base->initialized) {
 		return;
@@ -301,15 +305,17 @@ handle_xdg_toplevel_commit(struct wl_listener *listener, void *data)
 			view->impl->get_geometry(view, &width, &height);
 			if (width <= 80 && height <= 80 && seat_get_focus(view->server->seat) == view)
 				focus_wrapped_application(view->server);
-		} else {
-			int width = 0, height = 0;
-			view->impl->get_geometry(view, &width, &height);
-			view_fit_output(view, width, height);
 		}
 	}
 
 	if (!xdg_shell_view->xdg_toplevel->base->initial_commit) {
 		return;
+	}
+	if (!view->server->primary_view && !view_is_agentseat_overlay(view) && view_is_primary(view)) {
+		/* Pick the application root before its first configure. Some Electron
+		 * clients keep their default 1092x760 buffer when the compositor first
+		 * sends an unconstrained configure and only sizes them after map. */
+		view->server->primary_view = view;
 	}
 
 	wlr_xdg_toplevel_set_wm_capabilities(
@@ -337,6 +343,8 @@ handle_xdg_toplevel_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&xdg_shell_view->destroy.link);
 	wl_list_remove(&xdg_shell_view->request_fullscreen.link);
 	wl_list_remove(&xdg_shell_view->request_move.link);
+	wl_list_remove(&xdg_shell_view->set_title.link);
+	wl_list_remove(&xdg_shell_view->set_app_id.link);
 	xdg_shell_view->xdg_toplevel = NULL;
 
 	view_destroy(view);
@@ -352,6 +360,17 @@ static const struct cg_view_impl xdg_shell_view_impl = {
 	.destroy = destroy,
 	.close = close,
 };
+
+static void handle_title_changed(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct cg_xdg_shell_view *view = wl_container_of(listener, view, set_title);
+    cg_scene_changed(view->view.server->seat);
+}
+static void handle_app_id_changed(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct cg_xdg_shell_view *view = wl_container_of(listener, view, set_app_id);
+    cg_scene_changed(view->view.server->seat);
+}
 
 void
 handle_new_xdg_toplevel(struct wl_listener *listener, void *data)
@@ -382,6 +401,10 @@ handle_new_xdg_toplevel(struct wl_listener *listener, void *data)
 	xdg_shell_view->request_move.notify = handle_xdg_toplevel_request_move;
 	wl_signal_add(&toplevel->events.request_move, &xdg_shell_view->request_move);
 
+	xdg_shell_view->set_title.notify = handle_title_changed;
+	wl_signal_add(&toplevel->events.set_title, &xdg_shell_view->set_title);
+	xdg_shell_view->set_app_id.notify = handle_app_id_changed;
+	wl_signal_add(&toplevel->events.set_app_id, &xdg_shell_view->set_app_id);
 	toplevel->base->data = xdg_shell_view;
 }
 
@@ -392,6 +415,12 @@ popup_handle_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&popup->destroy.link);
 	wl_list_remove(&popup->commit.link);
 	wl_list_remove(&popup->reposition.link);
+	wl_list_remove(&popup->map.link);
+	wl_list_remove(&popup->unmap.link);
+	if (popup->server->seat->scene) {
+		wl_list_remove(&popup->scene_link);
+		cg_scene_changed(popup->server->seat);
+	}
 	free(popup);
 }
 
@@ -399,6 +428,7 @@ static void
 popup_handle_commit(struct wl_listener *listener, void *data)
 {
 	struct cg_xdg_popup *popup = wl_container_of(listener, popup, commit);
+	cg_scene_changed(popup->server->seat);
 
 	if (popup->xdg_popup->base->initial_commit) {
 		popup_unconstrain(popup->xdg_popup);
@@ -411,6 +441,17 @@ popup_handle_reposition(struct wl_listener *listener, void *data)
 	struct cg_xdg_popup *popup = wl_container_of(listener, popup, reposition);
 
 	popup_unconstrain(popup->xdg_popup);
+}
+
+static void popup_map_changed(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct cg_xdg_popup *popup = wl_container_of(listener, popup, map);
+    cg_scene_changed(popup->server->seat);
+}
+static void popup_unmap_changed(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct cg_xdg_popup *popup = wl_container_of(listener, popup, unmap);
+    cg_scene_changed(popup->server->seat);
 }
 
 void
@@ -451,6 +492,14 @@ handle_new_xdg_popup(struct wl_listener *listener, void *data)
 
 	popup->xdg_popup = wlr_popup;
 
+	struct wlr_scene_tree *popup_scene_tree = wlr_scene_xdg_surface_create(parent_scene_tree, wlr_popup->base);
+	if (popup_scene_tree == NULL) {
+		wlr_log(WLR_ERROR, "Failed to allocate scene-graph node for XDG popup");
+		free(popup);
+		return;
+	}
+
+	wlr_popup->base->data = popup_scene_tree;
 	popup->destroy.notify = popup_handle_destroy;
 	wl_signal_add(&wlr_popup->events.destroy, &popup->destroy);
 
@@ -460,14 +509,11 @@ handle_new_xdg_popup(struct wl_listener *listener, void *data)
 	popup->reposition.notify = popup_handle_reposition;
 	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
 
-	struct wlr_scene_tree *popup_scene_tree = wlr_scene_xdg_surface_create(parent_scene_tree, wlr_popup->base);
-	if (popup_scene_tree == NULL) {
-		wlr_log(WLR_ERROR, "Failed to allocate scene-graph node for XDG popup");
-		free(popup);
-		return;
-	}
-
-	wlr_popup->base->data = popup_scene_tree;
+	popup->map.notify = popup_map_changed;
+	wl_signal_add(&wlr_popup->base->surface->events.map, &popup->map);
+	popup->unmap.notify = popup_unmap_changed;
+	wl_signal_add(&wlr_popup->base->surface->events.unmap, &popup->unmap);
+	cg_scene_add_popup(server->seat, popup, view);
 }
 
 void

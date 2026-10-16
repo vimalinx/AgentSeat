@@ -17,6 +17,9 @@
 #include <wlr/xwayland.h>
 #endif
 
+struct cg_view;
+struct cg_application_process;
+struct cg_host_window;
 struct wp_viewporter;
 struct wl_registry;
 
@@ -28,7 +31,10 @@ enum cg_multi_output_mode {
 struct cg_server {
 	struct wl_display *wl_display;
 	struct wl_list views;
+	struct cg_view *primary_view;
 	struct wlr_backend *backend;
+	struct wlr_backend *parent_backend;
+	struct cg_host_window *host_window;
 	struct wl_registry *host_registry;
 	struct wp_viewporter *host_viewporter;
 	struct wlr_renderer *renderer;
@@ -78,9 +84,11 @@ struct cg_server {
 	bool xdg_decoration;
 	bool allow_vt_switch;
 	bool return_app_code;
+	bool stop_requested;
 	bool primary_client_exited;
 	bool application_mapped_once;
 	unsigned application_view_count;
+	struct cg_application_process *application_processes;
 	struct wl_event_source *primary_client_source;
 	struct wl_event_source *primary_exit_timer;
 	bool terminated;

@@ -10,12 +10,14 @@
 #include <stdlib.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
 #include <wlr/xwayland.h>
 
 #include "server.h"
 #include "view.h"
 #include "xwayland.h"
+#include "agentseat-scene.h"
 
 struct cg_xwayland_view *
 xwayland_view_from_view(struct cg_view *view)
@@ -58,7 +60,7 @@ is_primary(struct cg_view *view)
 {
 	struct cg_xwayland_view *xwayland_view = xwayland_view_from_view(view);
 	struct wlr_xwayland_surface *parent = xwayland_view->xwayland_surface->parent;
-	return parent == NULL;
+	return parent == NULL && !xwayland_view->xwayland_surface->override_redirect;
 }
 
 static bool
@@ -126,8 +128,18 @@ handle_xwayland_surface_request_configure(struct wl_listener *listener, void *da
 		wlr_xwayland_surface_configure(xsurface, x, y, width, height);
 		return;
 	}
-	view_fit_output(&xwayland_view->view, width, height);
-	view_configure_requested(&xwayland_view->view, width, height);
+	struct cg_view *view = &xwayland_view->view;
+	/* Managed X11 transients also carry application positioning requests.
+	 * Do not reduce ConfigureRequest to width/height and recenter the window. */
+	if (event->mask & XCB_CONFIG_WINDOW_X) {
+		view->lx = event->x;
+		view->client_positioned = true;
+	}
+	if (event->mask & XCB_CONFIG_WINDOW_Y) {
+		view->ly = event->y;
+		view->client_positioned = true;
+	}
+	view_configure_requested(view, width, height);
 }
 
 static void
@@ -157,9 +169,12 @@ handle_xwayland_surface_map(struct wl_listener *listener, void *data)
 	struct cg_xwayland_view *xwayland_view = wl_container_of(listener, xwayland_view, map);
 	struct cg_view *view = &xwayland_view->view;
 
-	if (!xwayland_view_should_manage(view)) {
+	/* X11 supplies initial coordinates on managed windows as well as
+	 * override-redirect menus. Remapping must retain the latest coordinates. */
+	if (!view->user_positioned) {
 		view->lx = xwayland_view->xwayland_surface->x;
 		view->ly = xwayland_view->xwayland_surface->y;
+		view->client_positioned = true;
 	}
 
 	view_map(view, xwayland_view->xwayland_surface->surface);
@@ -185,6 +200,9 @@ handle_xwayland_surface_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&xwayland_view->destroy.link);
 	wl_list_remove(&xwayland_view->request_configure.link);
 	wl_list_remove(&xwayland_view->request_fullscreen.link);
+	wl_list_remove(&xwayland_view->set_title.link);
+	wl_list_remove(&xwayland_view->set_class.link);
+	wl_list_remove(&xwayland_view->set_geometry.link);
 	xwayland_view->xwayland_surface = NULL;
 
 	view_destroy(view);
@@ -221,6 +239,29 @@ handle_xwayland_dissociate(struct wl_listener *listener, void *data)
 	wl_list_remove(&xwayland_view->unmap.link);
 }
 
+static void handle_title_changed(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct cg_xwayland_view *view = wl_container_of(listener, view, set_title);
+    cg_scene_changed(view->view.server->seat);
+}
+static void handle_class_changed(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct cg_xwayland_view *view = wl_container_of(listener, view, set_class);
+    cg_scene_changed(view->view.server->seat);
+}
+
+static void handle_geometry_changed(struct wl_listener *listener, void *data) {
+    struct cg_xwayland_view *xview = wl_container_of(listener, xview, set_geometry);
+    if (!xview->xwayland_surface->override_redirect) return;
+    struct cg_view *view = &xview->view;
+    view->lx = xview->xwayland_surface->x;
+    view->ly = xview->xwayland_surface->y;
+    if (view->scene_tree) {
+        wlr_scene_node_set_position(&view->scene_tree->node, view->lx, view->ly);
+        cg_scene_changed(view->server->seat);
+    }
+}
+
 void
 handle_xwayland_surface_new(struct wl_listener *listener, void *data)
 {
@@ -244,6 +285,12 @@ handle_xwayland_surface_new(struct wl_listener *listener, void *data)
 	wl_signal_add(&xwayland_surface->events.destroy, &xwayland_view->destroy);
 	xwayland_view->request_configure.notify = handle_xwayland_surface_request_configure;
 	wl_signal_add(&xwayland_surface->events.request_configure, &xwayland_view->request_configure);
+	xwayland_view->set_title.notify = handle_title_changed;
+	wl_signal_add(&xwayland_surface->events.set_title, &xwayland_view->set_title);
+	xwayland_view->set_class.notify = handle_class_changed;
+	wl_signal_add(&xwayland_surface->events.set_class, &xwayland_view->set_class);
+	xwayland_view->set_geometry.notify = handle_geometry_changed;
+	wl_signal_add(&xwayland_surface->events.set_geometry, &xwayland_view->set_geometry);
 	xwayland_view->request_fullscreen.notify = handle_xwayland_surface_request_fullscreen;
 	wl_signal_add(&xwayland_surface->events.request_fullscreen, &xwayland_view->request_fullscreen);
 }

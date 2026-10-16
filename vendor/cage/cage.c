@@ -21,6 +21,8 @@
 #include <unistd.h>
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
+#include <wlr/backend/wayland.h>
+#include <wlr/backend/multi.h>
 #include <wlr/config.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
@@ -30,6 +32,7 @@
 #include <wlr/types/wlr_ext_data_control_v1.h>
 #include <wlr/types/wlr_export_dmabuf_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
@@ -59,6 +62,7 @@
 
 #include "idle_inhibit_v1.h"
 #include "output.h"
+#include "host-window.h"
 #include "seat.h"
 #include "server.h"
 #include "view.h"
@@ -66,6 +70,8 @@
 #if CAGE_HAS_XWAYLAND
 #include "xwayland.h"
 #endif
+
+#include "application-lifetime.h"
 
 #define PRIMARY_EXIT_GRACE_MS 15000
 
@@ -104,7 +110,7 @@ static int
 primary_exit_grace_handler(void *data)
 {
 	struct cg_server *server = data;
-	if (!view_has_application_views(server)) {
+	if (!application_lifetime_alive(server)) {
 		wlr_log(WLR_DEBUG, "Primary launcher exited without an application surface");
 		server_terminate(server);
 	}
@@ -131,8 +137,8 @@ sigchld_handler(int fd, uint32_t mask, void *data)
 		wl_event_source_remove(server->primary_client_source);
 		server->primary_client_source = NULL;
 	}
-	if (view_has_application_views(server)) {
-		wlr_log(WLR_DEBUG, "Primary launcher exited; keeping mapped application surfaces alive");
+	if (application_lifetime_alive(server)) {
+		wlr_log(WLR_DEBUG, "Primary launcher exited; keeping resident application processes or windows alive");
 	} else if (server->application_mapped_once) {
 		server_terminate(server);
 	} else if (!server->primary_exit_timer ||
@@ -227,11 +233,13 @@ terminate_remaining_process_group(pid_t pid)
 }
 
 static int
-cleanup_primary_client(pid_t pid)
+cleanup_primary_client(pid_t pid, bool force)
 {
 	int status = 0;
 	pid_t waited = waitpid(pid, &status, WNOHANG);
 	if (waited == 0) {
+		if (!force)
+			return 0;
 		if (kill(-pid, SIGTERM) < 0 && errno != ESRCH) {
 			wlr_log_errno(WLR_ERROR, "Unable to terminate primary client process group");
 		}
@@ -251,7 +259,10 @@ cleanup_primary_client(pid_t pid)
 	}
 	if (waited != pid)
 		return 1;
-	terminate_remaining_process_group(pid);
+	/* Natural application exit does not authorize killing work it left behind.
+	 * Explicit wrapper stop and abnormal teardown still clean the owned group. */
+	if (force)
+		terminate_remaining_process_group(pid);
 
 	if (WIFEXITED(status)) {
 		wlr_log(WLR_DEBUG, "Child exited normally with exit status %d", WEXITSTATUS(status));
@@ -299,6 +310,7 @@ handle_signal(int signal, void *data)
 	case SIGINT:
 		/* Fallthrough */
 	case SIGTERM:
+		server->stop_requested = true;
 		server_terminate(server);
 		return 0;
 	case SIGUSR1:
@@ -370,6 +382,8 @@ int
 main(int argc, char *argv[])
 {
 	struct cg_server server = {.log_level = WLR_INFO};
+	wl_list_init(&server.outputs);
+	wl_list_init(&server.views);
 	pid_t pid = 0;
 	int ret = 0, app_ret = 0;
 
@@ -411,7 +425,21 @@ main(int argc, char *argv[])
 		wlr_log(WLR_ERROR, "Unable to create primary client exit grace timer");
 	}
 
-	server.backend = wlr_backend_autocreate(event_loop, &server.session);
+	const char *backends = getenv("WLR_BACKENDS");
+	/* Our single-application Wayland lane creates its own parent toplevel. The
+	 * auto-created backend's default toplevel treats close as output destruction. */
+	if (backends && strcmp(backends, "wayland") == 0) {
+		server.backend = wlr_multi_backend_create(event_loop);
+		server.parent_backend = wlr_wl_backend_create(event_loop, NULL);
+		if (!server.backend || !server.parent_backend ||
+		    !wlr_multi_backend_add(server.backend, server.parent_backend)) {
+			wlr_log(WLR_ERROR, "Unable to create the parent Wayland backend");
+			ret = 1;
+			goto end;
+		}
+	} else {
+		server.backend = wlr_backend_autocreate(event_loop, &server.session);
+	}
 	if (!server.backend) {
 		wlr_log(WLR_ERROR, "Unable to create the wlroots backend");
 		ret = 1;
@@ -568,6 +596,12 @@ main(int argc, char *argv[])
 		goto end;
 	}
 
+	if (!wlr_fractional_scale_manager_v1_create(server.wl_display, 1)) {
+		wlr_log(WLR_ERROR, "Unable to create the fractional scale manager");
+		ret = 1;
+		goto end;
+	}
+
 	struct wlr_presentation *presentation = wlr_presentation_create(server.wl_display, server.backend, 2);
 	if (!presentation) {
 		wlr_log(WLR_ERROR, "Unable to create the presentation interface");
@@ -701,13 +735,18 @@ main(int argc, char *argv[])
 	}
 
 	if (!output_init_host_viewporter(&server)) {
-		wlr_log(WLR_ERROR, "Unable to initialize host fractional-scale viewport");
+		wlr_log(WLR_ERROR, "Unable to initialize the host HiDPI viewport");
 		ret = 1;
 		goto end;
 	}
 
 	if (!wlr_backend_start(server.backend)) {
 		wlr_log(WLR_ERROR, "Unable to start the wlroots backend");
+		ret = 1;
+		goto end;
+	}
+	if (!host_window_create(&server)) {
+		wlr_log(WLR_ERROR, "Unable to create the AgentSeat parent window");
 		ret = 1;
 		goto end;
 	}
@@ -732,7 +771,6 @@ main(int argc, char *argv[])
 	seat_center_cursor(server.seat);
 	wl_display_run(server.wl_display);
 	output_finish_host_viewporter(&server);
-
 #if CAGE_HAS_XWAYLAND
 	if (xwayland) {
 		wl_list_remove(&server.new_xwayland_surface.link);
@@ -759,8 +797,11 @@ main(int argc, char *argv[])
 	wl_list_remove(&server.output_layout_change.link);
 
 end:
+	application_lifetime_finish(&server);
+	output_finish_host_viewporter(&server);
+	host_window_finish(&server);
 	if (pid != 0)
-		app_ret = cleanup_primary_client(pid);
+		app_ret = cleanup_primary_client(pid, server.stop_requested || !server.return_app_code);
 	if (!ret && server.return_app_code)
 		ret = app_ret;
 

@@ -17,6 +17,7 @@ struct cg_xdg_shell_view {
 	struct wl_listener map;
 	struct wl_listener request_fullscreen;
 	struct wl_listener request_move;
+	struct wl_listener set_title, set_app_id;
 };
 
 struct cg_xdg_decoration {
@@ -28,6 +29,10 @@ struct cg_xdg_decoration {
 };
 
 struct cg_xdg_popup {
+	struct cg_server *server;
+	struct wl_list scene_link;
+	uint32_t agentseat_id, parent_id;
+	struct wl_listener map, unmap;
 	struct wlr_xdg_popup *xdg_popup;
 
 	struct wl_listener destroy;

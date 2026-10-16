@@ -23,6 +23,8 @@ enum cg_view_type {
 
 struct cg_view {
 	struct cg_server *server;
+	uint32_t agentseat_id;
+	struct wl_listener scene_commit;
 	struct wl_list link; // server::views
 	struct wlr_surface *wlr_surface;
 	struct wlr_scene_tree *scene_tree;
@@ -31,6 +33,9 @@ struct cg_view {
 	int lx, ly;
 	bool agentseat_overlay;
 	bool user_positioned;
+	bool client_positioned;
+	bool overlay_position_loaded, overlay_position_valid;
+	double overlay_position_x, overlay_position_y;
 	bool overlay_anchor_valid;
 	int overlay_anchor_x, overlay_anchor_y;
 	int overlay_last_width, overlay_last_height;
@@ -62,7 +67,6 @@ bool view_is_agentseat_overlay(struct cg_view *view);
 bool view_has_application_views(struct cg_server *server);
 void view_activate(struct cg_view *view, bool activate);
 void view_configure_requested(struct cg_view *view, int width, int height);
-void view_fit_output(struct cg_view *view, int width, int height);
 void view_position(struct cg_view *view);
 void view_position_all(struct cg_server *server);
 void view_unmap(struct cg_view *view);
@@ -71,5 +75,7 @@ void view_destroy(struct cg_view *view);
 void view_init(struct cg_view *view, struct cg_server *server, enum cg_view_type type, const struct cg_view_impl *impl);
 
 struct cg_view *view_from_wlr_surface(struct wlr_surface *surface);
+
+void view_save_overlay_position(struct cg_view *view);
 
 #endif
