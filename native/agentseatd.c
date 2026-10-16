@@ -24,7 +24,7 @@
 #include "request-ledger.h"
 #include "agentseat-semantic.h"
 
-#define AGENTSEATD_VERSION "0.5.2"
+#define AGENTSEATD_VERSION "0.6.0"
 #define MAX_REQUEST (1024U * 1024U)
 #define MAX_LEASES 256
 #define MAX_TYPE_BYTES 32768U
