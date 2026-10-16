@@ -632,6 +632,12 @@ class Bridge:
             except RuntimeError as error:
                 if str(error) != "ACCESSIBLE_OUTSIDE_APPLICATION_SCOPE":
                     raise
+        if not pending and len(roots) <= 256:
+            # No accessible root belongs to the application (Tk, raw X11,
+            # games, canvas toolkits). Say so instead of returning an empty
+            # tree that reads like an empty application or a satisfied
+            # "absent" condition.
+            raise RuntimeError("SEMANTICS_UNAVAILABLE")
         snapshot_id = uuid.uuid4().hex
         nodes, refs, seen, errors = [], {}, set(), []
         incomplete = len(roots) > 256

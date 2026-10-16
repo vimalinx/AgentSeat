@@ -133,6 +133,12 @@ releases can interrupt further reads; never use the first read as a paste
 postcondition. No receiver within five seconds leaves an unknown outcome, and
 neither CLI nor SDK replays the request.
 
+Sessions launched with an input method (`fcitx5`, `desktop`, `inherit`) type by
+chunked private paste so the engine cannot rewrite the text. Canvases, games and
+terminals that only handle key events ignore paste; `agentseat type --keys`
+sends `keyboard.type` key events instead and fails with `UNSUPPORTED_CHARACTER`
+for characters the Agent keymap cannot produce, without falling back to paste.
+
 The micro-host bounds each source at 64 read requests and 16 simultaneous
 nonblocking writers. Closed/broken recipients cannot block or terminate its
 input loop. Human takeover, pause, writer expiry and daemon disconnect clear
@@ -287,6 +293,14 @@ agentseat --instance example a11y snapshot --snapshot-id '<id>' --offset 64
 agentseat --instance example a11y text '<node_ref>' --start 0 --count 1024
 agentseat --instance example a11y text-state '<node_ref>'
 ```
+
+When no accessible root inside the application scope is registered (Tk, raw
+X11, games and other canvas toolkits), `snapshot`, `query` and selector-based
+`wait` fail with `SEMANTICS_UNAVAILABLE` instead of returning an empty tree. An
+empty result would read like an empty application and would satisfy an
+`absent` condition. Operate such applications visually; `doctor` reports the
+case as a warning and `capabilities` marks semantic entries as not exposed by
+the application.
 
 `text_state` (SDK `text_state(ref)`) reads the application's caret offset,
 character count and up to 16 selection ranges. Password/protected nodes reject

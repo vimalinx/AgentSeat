@@ -1507,8 +1507,10 @@ def resolve_ime(choice: str, private_dbus: bool = False) -> str:
     return ("fcitx5" if private_dbus else "desktop") if probe.returncode == 0 else "inherit"
 
 
-def type_text(text: str) -> dict[str, Any]:
-    if load_state().get("launch", {}).get("ime") in {"fcitx5", "desktop", "inherit"}:
+def type_text(text: str, *, keys: bool = False) -> dict[str, Any]:
+    # IME sessions paste so the engine cannot rewrite text; `keys` forces key
+    # events for canvases, games and terminals that ignore paste.
+    if not keys and load_state().get("launch", {}).get("ime") in {"fcitx5", "desktop", "inherit"}:
         return private_unicode_paste(text)
     result = rpc("keyboard.type", {"text": text})
     # A pre-upgrade daemon returns the legacy synchronous result.
@@ -1893,7 +1895,10 @@ def probe_session() -> dict[str, Any]:
             snapshot = a11y_read("snapshot", max_nodes=8, max_depth=3)
             facts["a11y_nodes"] = len(snapshot.get("nodes", []))
         except AgentSeatError as exc:
-            facts["a11y_error"] = str(exc)
+            if "SEMANTICS_UNAVAILABLE" in str(exc):
+                facts["a11y_nodes"] = 0
+            else:
+                facts["a11y_error"] = str(exc)
     return facts
 
 
@@ -1962,7 +1967,7 @@ def doctor(probe_capture: bool = False) -> dict[str, Any]:
               {"seat_paused": heartbeat.get("seat_paused"), "human_active": collaboration.get("human_active"),
                "write_lease_holder": writer.get("controller_id") or None})
         ime = facts["launch"].get("ime")
-        check("text_lane", "ok", {"ime": ime, "lane": "keyboard.type" if ime == "simple" else "keyboard.paste (chunked)"})
+        check("text_lane", "ok", {"ime": ime, "lane": text_lane(ime)})
         if not facts["launch"].get("a11y"):
             check("a11y", "skip", "launch with --a11y for semantic reads and actions")
         elif "a11y_error" in facts:
@@ -1993,6 +1998,12 @@ def doctor(probe_capture: bool = False) -> dict[str, Any]:
             "degradations": [f"{item['check']}: {item['detail']}" for item in checks if item["status"] in {"warn", "fail"}]}
 
 
+def text_lane(ime: str | None) -> str:
+    if ime == "simple":
+        return "keyboard.type"
+    return "keyboard.paste (chunked); type --keys sends key events"
+
+
 def capabilities() -> dict[str, Any]:
     """Separate implemented, exposed by the application, authorized and available."""
     facts = probe_session()
@@ -2009,33 +2020,54 @@ def capabilities() -> dict[str, Any]:
     a11y_ready = live and bool(launch.get("a11y")) and "a11y" in facts
     a11y_nodes = facts.get("a11y_nodes", 0) > 1
 
-    def entry(implemented: bool, exposes: bool | None, authorized: bool | None, reason: str | None = None) -> dict[str, Any]:
+    def entry(implemented: bool, exposes: bool | None, authorized: bool | None, *,
+              missing: str | None = None, hidden: str | None = None, denied: str | None = None) -> dict[str, Any]:
         available = bool(implemented and live and exposes is not False and authorized is not False)
+        # Report the check that actually failed, in evaluation order.
+        if available:
+            reason = None
+        elif not implemented:
+            reason = missing or "not implemented by this runtime"
+        elif not live:
+            reason = "no session"
+        elif exposes is False:
+            reason = hidden
+        else:
+            reason = denied
         return {"implemented": implemented, "application_exposes": exposes, "session_authorized": authorized,
-                "available": available, "reason": None if available else ("no session" if not live else reason)}
+                "available": available, "reason": reason}
 
     has_windows = bool(windows) if live else None
     write_reason = "seat paused, human active or another controller holds the write lease"
+    a11y_launched = bool(launch.get("a11y")) if live else None
+    semantic_exposes = a11y_nodes if a11y_ready else None
+    semantic_hidden = facts.get("a11y_error") or (
+        "application exposes no accessible controls; use visual input" if a11y_ready else None)
+    semantic_denied = "launch with --a11y"
     result = {
-        "observe.capture": entry(True, has_windows, True if live else None, "no mapped window"),
+        "observe.capture": entry(True, has_windows, True if live else None, hidden="no mapped window"),
         "observe.wait_change": entry(content, True if live else None, True if live else None,
-                                     None if content else "microhost predates content serial"),
-        "input.pointer": entry(True, has_windows, writes_allowed if live else None, write_reason),
-        "input.keys": entry(True, has_windows, writes_allowed if live else None, write_reason),
-        "input.text": {**entry(True, has_windows, writes_allowed if live else None, write_reason),
-                       "lane": None if not live else ("keyboard.type" if launch.get("ime") == "simple" else "keyboard.paste (chunked)")},
+                                     missing="microhost predates content serial"),
+        "input.pointer": entry(True, has_windows, writes_allowed if live else None,
+                               hidden="no mapped window", denied=write_reason),
+        "input.keys": entry(True, has_windows, writes_allowed if live else None,
+                            hidden="no mapped window", denied=write_reason),
+        "input.text": {**entry(True, has_windows, writes_allowed if live else None,
+                               hidden="no mapped window", denied=write_reason),
+                       "lane": text_lane(launch.get("ime")) if live else None},
         "input.private_paste": entry(clipboard, has_windows, writes_allowed if live else None,
-                                     write_reason if clipboard else "daemon has no private clipboard"),
-        "windows.focus_move_resize_close": {**entry(True, has_windows, writes_allowed if live else None, write_reason),
+                                     missing="daemon has no private clipboard", hidden="no mapped window",
+                                     denied=write_reason),
+        "windows.focus_move_resize_close": {**entry(True, has_windows, writes_allowed if live else None,
+                                                    hidden="no mapped window", denied=write_reason),
                                             "verification": "compositor_confirmed"},
-        "semantic.read": entry(True, a11y_nodes if a11y_ready else None, bool(launch.get("a11y")) if live else None,
-                               "launch with --a11y" if live and not launch.get("a11y") else facts.get("a11y_error")),
-        "semantic.actions": {**entry(True, a11y_nodes if a11y_ready else None,
-                                     (bool(launch.get("a11y")) and writes_allowed) if live else None,
-                                     "launch with --a11y" if live and not launch.get("a11y") else write_reason),
+        "semantic.read": entry(True, semantic_exposes, a11y_launched, hidden=semantic_hidden, denied=semantic_denied),
+        "semantic.actions": {**entry(True, semantic_exposes, (a11y_launched and writes_allowed) if live else None,
+                                     hidden=semantic_hidden,
+                                     denied=semantic_denied if live and not launch.get("a11y") else write_reason),
                              "per_node": "inspect a11y get; each node lists its own actions and interfaces"},
-        "semantic.events_wait": entry(True, a11y_nodes if a11y_ready else None, bool(launch.get("a11y")) if live else None,
-                                      "launch with --a11y"),
+        "semantic.events_wait": entry(True, semantic_exposes, a11y_launched, hidden=semantic_hidden,
+                                      denied=semantic_denied),
     }
     return {"session": heartbeat.get("session_id"), "controller_id": RPC_CONTROLLER_ID, "capabilities": result}
 
@@ -2227,6 +2259,9 @@ def main() -> int:
     key_parser.add_argument("state", choices=("down", "up"))
     type_parser = commands.add_parser("type", help=_("type text with the private keyboard"))
     type_parser.add_argument("text")
+    type_parser.add_argument(
+        "--keys", action="store_true",
+        help=_("send key events instead of a private paste, for applications that ignore paste"))
     observe_parser = commands.add_parser("observe", help=_("capture the private application output"))
     observe_parser.add_argument("path", nargs="?")
     doctor_parser = commands.add_parser("doctor", help="diagnose dependencies, scope, mapping and degradations")
@@ -2406,9 +2441,9 @@ def main() -> int:
     elif args.command == "type":
         sync_window_tree()
         try:
-            result = type_text(args.text)
+            result = type_text(args.text, keys=args.keys)
         except AgentSeatError as exc:
-            if not str(exc).startswith("UNSUPPORTED_CHARACTER:"):
+            if args.keys or not str(exc).startswith("UNSUPPORTED_CHARACTER:"):
                 raise
             result = private_unicode_paste(args.text)
     elif args.command == "observe":

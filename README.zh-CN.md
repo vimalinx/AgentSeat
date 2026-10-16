@@ -140,6 +140,7 @@ agentseat windows
 agentseat move 0.50 0.50
 agentseat click
 agentseat type '来自 Agent 的问候'
+agentseat type --keys 'text for a canvas or terminal'
 agentseat scroll vertical -120
 agentseat observe
 agentseat wait-change --since SERIAL --timeout-ms 5000
@@ -153,7 +154,9 @@ agentseat stop
 基本闭环是 `observe → 操作 → wait-change → observe`。`observe` 返回 `content_serial`，
 把它传给 `wait-change --since`，截图之后发生的变化就不会漏掉。光标闪烁、指针移动和
 协作脑袋不算变化。`doctor` 只诊断依赖、范围和坐标映射，不做任何修改；`capabilities`
-区分已实现、应用暴露、本会话授权和当前可用的能力。
+区分已实现、应用暴露、本会话授权和当前可用的能力。没有无障碍接口的应用（Tk、游戏、
+画布类工具包）在语义读取时返回 `SEMANTICS_UNAVAILABLE`，请改用视觉操作；它们不接受
+粘贴时用 `type --keys` 发送按键。
 
 `run` 保留原来的单一默认会话，适合 Agent 直接操作。需要让每个桌面应用拥有
 独立可管理的 AgentSeat 实例时，使用 `launch`：

@@ -150,6 +150,7 @@ agentseat windows
 agentseat move 0.50 0.50
 agentseat click
 agentseat type 'hello from the Agent'
+agentseat type --keys 'text for a canvas or terminal'
 agentseat scroll vertical -120
 agentseat observe
 agentseat wait-change --since SERIAL --timeout-ms 5000
@@ -166,6 +167,9 @@ is never missed. Caret blinks, pointer motion and the HUD do not count as
 changes. `doctor` diagnoses dependencies, scope and coordinate mapping without
 changing anything; `capabilities` separates what is implemented, what the
 application exposes, what this session may do and what is available now.
+Applications without accessibility (Tk, games, canvas toolkits) report
+`SEMANTICS_UNAVAILABLE` for semantic reads; operate them visually, and use
+`type --keys` where they ignore paste.
 
 `run` keeps the original single default session for direct Agent operation.
 Use `launch` when each desktop application needs its own independently managed
