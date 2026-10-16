@@ -55,12 +55,23 @@ sample, fell from 8.3 % to 0.8 %; the remainder is its 300 ms state poll.
 
 ### Reading the baseline
 
-- Each CLI call costs about 270 ms before any work: Python start-up plus the
-  host geometry query. The daemon-side capture itself takes a few
+- Each CLI call costs a fixed process start-up (Python plus the host geometry
+  query) before any work; the daemon-side capture itself takes a few
   milliseconds. Agents that call repeatedly should use the Python SDK
   (`agentseat paths` → `python_sdk`) and avoid one process per action.
+- The start-up cost depends on the host's state. Baseline runs at 20:32 and
+  21:12 measured `heartbeat_cli` near 270 ms; at 21:26 the same 0.6.1 release
+  measured 110 ms. The cause of the earlier, slower state was not identified,
+  so compare CLI latencies only between runs taken back to back.
 - The idle cost came from the optional HUD animation, not the runtime core,
   and was removed in 0.6.0.
+
+### Controller split (0.6.2)
+
+Back to back on one live session: `heartbeat` 110 ms with 0.6.1 (single
+script) and 87 ms with 0.6.2 (package with cached bytecode). Benchmark of the
+installed 0.6.2: `heartbeat_cli` p50 90 ms, `observe_cli` p95 125 ms, capture
+p95 5.7 ms, wait-change p95 52 ms, idle micro-host 0.0 %, daemon 0.1 %.
 
 ## Budgets
 
