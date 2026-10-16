@@ -260,6 +260,35 @@ output_disable(struct cg_output *output)
 	output_layout_remove(output);
 }
 
+/* AgentSeat's own overlays (the HUD) are not application content. */
+static void
+subtract_overlays(struct cg_output *output, pixman_region32_t *region)
+{
+	const int pad = 32;
+	float scale = output->wlr_output->scale;
+	struct cg_view *view;
+	wl_list_for_each (view, &output->server->views, link) {
+		if (!view->wlr_surface || !view_is_agentseat_overlay(view))
+			continue;
+		int x = (int)floorf((view->lx - output->scene_output->x - pad) * scale);
+		int y = (int)floorf((view->ly - output->scene_output->y - pad) * scale);
+		int width = (int)ceilf((view->wlr_surface->current.width + 2 * pad) * scale);
+		int height = (int)ceilf((view->wlr_surface->current.height + 2 * pad) * scale);
+		pixman_region32_t overlay;
+		pixman_region32_init_rect(&overlay, x, y, (unsigned)width, (unsigned)height);
+		pixman_region32_subtract(region, region, &overlay);
+		pixman_region32_fini(&overlay);
+	}
+}
+
+static void
+handle_output_damage(struct wl_listener *listener, void *data)
+{
+	struct cg_output *output = wl_container_of(listener, output, damage);
+	struct wlr_output_event_damage *event = data;
+	pixman_region32_union(&output->cursor_damage, &output->cursor_damage, event->damage);
+}
+
 static void
 output_render(struct cg_output *output)
 {
@@ -267,8 +296,29 @@ output_render(struct cg_output *output)
 		return;
 	}
 
-	if (!wlr_scene_output_commit(output->scene_output, NULL))
+	/* Only scene damage counts as content; capture and frame-clock commits
+	 * without damage leave the serial unchanged. */
+	pixman_region32_t damage;
+	pixman_region32_init(&damage);
+	pixman_region32_copy(&damage, &output->scene_output->damage_ring.current);
+	subtract_overlays(output, &damage);
+	pixman_region32_subtract(&damage, &damage, &output->cursor_damage);
+	bool damaged = pixman_region32_not_empty(&damage);
+	pixman_box32_t extents = *pixman_region32_extents(&damage);
+	uint64_t area = 0;
+	int rect_count = 0;
+	const pixman_box32_t *rects = pixman_region32_rectangles(&damage, &rect_count);
+	for (int i = 0; i < rect_count; i++)
+		area += (uint64_t)(rects[i].x2 - rects[i].x1) * (uint64_t)(rects[i].y2 - rects[i].y1);
+	pixman_region32_fini(&damage);
+	bool committed = wlr_scene_output_commit(output->scene_output, NULL);
+	if (committed)
+		pixman_region32_clear(&output->cursor_damage);
+	if (!committed)
 		wlr_log(WLR_ERROR, "Application output frame commit failed");
+	else if (damaged && output->server->seat)
+		seat_content_committed(output->server->seat, extents.x1, extents.y1,
+			extents.x2 - extents.x1, extents.y2 - extents.y1, area > UINT32_MAX ? UINT32_MAX : (uint32_t)area);
 
 	struct timespec now = {0};
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -438,6 +488,8 @@ output_destroy(struct cg_output *output)
 	wl_list_remove(&output->needs_frame.link);
 	wl_list_remove(&output->request_state.link);
 	wl_list_remove(&output->frame.link);
+	wl_list_remove(&output->damage.link);
+	pixman_region32_fini(&output->cursor_damage);
 	wl_list_remove(&output->link);
 
 	output_layout_remove(output);
@@ -529,6 +581,9 @@ handle_new_output(struct wl_listener *listener, void *data)
 	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
 	output->frame.notify = handle_output_frame;
 	wl_signal_add(&wlr_output->events.frame, &output->frame);
+	pixman_region32_init(&output->cursor_damage);
+	output->damage.notify = handle_output_damage;
+	wl_signal_add(&wlr_output->events.damage, &output->damage);
 
 	struct wlr_output_state state = {0};
 	wlr_output_state_set_enabled(&state, true);

@@ -23,7 +23,7 @@
 #define MAX_BYTES (64U * 1024U * 1024U)
 struct receipt {
     char id[64], path[PATH_MAX], status[32], error[128];
-    uint32_t width, height, geometry_version;
+    uint32_t width, height, geometry_version, content_serial;
     uint64_t submitted_ns, presented_ns;
 };
 struct as_capture {
@@ -194,18 +194,19 @@ static json_object *receipt_json(struct as_capture *c, struct receipt *r) {
     json_object_object_add(out, "width", json_object_new_int64(r->width));
     json_object_object_add(out, "height", json_object_new_int64(r->height));
     json_object_object_add(out, "geometry_version", json_object_new_int64(r->geometry_version));
+    json_object_object_add(out, "content_serial", json_object_new_int64(r->content_serial));
     json_object_object_add(out, "submitted_ns", json_object_new_int64(r->submitted_ns));
     json_object_object_add(out, "presented_ns", json_object_new_int64(r->presented_ns));
     return out;
 }
 json_object *as_capture_start(struct as_capture *c, struct agentseat_control_v1 *control,
-    const char *socket_path, uint32_t geometry_version) {
+    const char *socket_path, uint32_t geometry_version, uint32_t content_serial) {
     as_capture_tick(c);
     if (!c || c->active || !c->manager || !c->shm || !c->output) return NULL;
     struct receipt *r = &c->receipts[c->sequence++ % RETAINED];
     if (r->path[0]) unlink(r->path);
     memset(r, 0, sizeof(*r));
-    r->submitted_ns = now_ns(); r->geometry_version = geometry_version;
+    r->submitted_ns = now_ns(); r->geometry_version = geometry_version; r->content_serial = content_serial;
     snprintf(r->id, sizeof(r->id), "f-%llu-%llu", (unsigned long long)r->submitted_ns, (unsigned long long)c->sequence);
     const char *slash = strrchr(socket_path, '/');
     if (!slash || (size_t)(slash - socket_path) + strlen(r->id) + 8 >= sizeof(r->path)) return NULL;

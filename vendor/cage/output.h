@@ -1,6 +1,7 @@
 #ifndef CG_OUTPUT_H
 #define CG_OUTPUT_H
 
+#include <pixman.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_output.h>
 
@@ -22,6 +23,9 @@ struct cg_output {
 	struct wl_listener request_state;
 	struct wl_listener destroy;
 	struct wl_listener frame;
+	struct wl_listener damage;
+	/* Software-cursor damage since the last commit; not app content. */
+	pixman_region32_t cursor_damage;
 
 	struct wl_list link; // cg_server::outputs
 };

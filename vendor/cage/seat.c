@@ -320,11 +320,19 @@ control_resource_destroy(struct wl_resource *resource)
 	control_revoke(seat);
 }
 
+void
+seat_content_committed(struct cg_seat *seat, int x, int y, int width, int height, uint32_t area)
+{
+	seat->content_serial++;
+	if (seat->control_resource && wl_resource_get_version(seat->control_resource) >= 4)
+		agentseat_control_v1_send_content(seat->control_resource, seat->content_serial, x, y, width, height, area);
+}
+
 static void
 control_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id)
 {
 	struct cg_seat *seat = data;
-	struct wl_resource *resource = wl_resource_create(client, &agentseat_control_v1_interface, version > 3 ? 3 : version, id);
+	struct wl_resource *resource = wl_resource_create(client, &agentseat_control_v1_interface, version > 4 ? 4 : version, id);
 	if (!resource) {
 		wl_client_post_no_memory(client);
 		return;
@@ -337,6 +345,8 @@ control_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id
 	seat->control_resource = resource;
 	wl_resource_set_implementation(resource, &control_implementation, seat, control_resource_destroy);
 	control_send_state(seat);
+	if (version >= 4)
+		agentseat_control_v1_send_content(resource, seat->content_serial, 0, 0, 0, 0, 0);
 	cg_scene_snapshot(client, resource);
 }
 
@@ -1518,7 +1528,7 @@ seat_create(struct cg_server *server, struct wlr_backend *backend)
 	}
 	seat->hold_timer = wl_event_loop_add_timer(wl_display_get_event_loop(server->wl_display), hold_timeout_expired, seat);
 	seat->control_timer = wl_event_loop_add_timer(wl_display_get_event_loop(server->wl_display), control_quiet_timer, seat);
-	seat->control_global = wl_global_create(server->wl_display, &agentseat_control_v1_interface, 3, seat, control_bind);
+	seat->control_global = wl_global_create(server->wl_display, &agentseat_control_v1_interface, 4, seat, control_bind);
 	if (!seat->control_timer || !seat->control_global || !seat->hold_timer || !seat->scene) {
 		seat_destroy(seat);
 		return NULL;

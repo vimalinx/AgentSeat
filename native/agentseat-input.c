@@ -44,6 +44,8 @@ struct input_state {
     uint32_t control_epoch;
     uint32_t window_action_token, window_action_status;
     uint32_t clipboard_token, clipboard_status, clipboard_transfers, clipboard_bytes;
+    uint32_t content_serial, content_msec;
+    struct agentseat_content_change content_history[AGENTSEAT_CONTENT_HISTORY];
     struct wl_callback* authorization;
     uint32_t authorization_requested, authorization_token, authorization_epoch;
     bool authorization_allowed;
@@ -404,10 +406,20 @@ static void clipboard_transfer(void* data, struct agentseat_control_v1* control,
     if (self->clipboard_token != token) return;
     self->clipboard_transfers++; self->clipboard_bytes += bytes;
 }
+static void content(void* data, struct agentseat_control_v1* control, uint32_t serial,
+    int32_t x, int32_t y, int32_t width, int32_t height, uint32_t area) {
+    struct input_state* self = data; (void)control;
+    self->content_serial = serial; self->content_msec = monotonic_ms();
+    if (!area) return; /* bind-time announcement of the current serial */
+    self->content_history[serial % AGENTSEAT_CONTENT_HISTORY] = (struct agentseat_content_change){
+        .serial = serial, .area = area, .msec = self->content_msec,
+        .x = x, .y = y, .width = width, .height = height};
+}
 static const struct agentseat_control_v1_listener control_listener = {
     .state = control_state, .scene_begin = scene_begin, .window_info = window_info,
     .scene_done = scene_done, .window_action_done = window_action_done,
     .clipboard_offered = clipboard_offered, .clipboard_transfer = clipboard_transfer,
+    .content = content,
 };
 
 static void registry_global(
@@ -418,7 +430,7 @@ static void registry_global(
     uint32_t version) {
     struct input_state* self = data;
     if (strcmp(interface, agentseat_control_v1_interface.name) == 0 && version >= 2 && !self->control) {
-        self->control = wl_registry_bind(registry, id, &agentseat_control_v1_interface, version > 3 ? 3 : version);
+        self->control = wl_registry_bind(registry, id, &agentseat_control_v1_interface, version > 4 ? 4 : version);
         agentseat_control_v1_add_listener(self->control, &control_listener, self);
     } else if (strcmp(interface, zwp_virtual_keyboard_manager_v1_interface.name) == 0 && !self->keyboard_manager) {
         self->keyboard_manager = wl_registry_bind(registry, id, &zwp_virtual_keyboard_manager_v1_interface, 1);
@@ -741,6 +753,8 @@ void agentseat_input_status(const struct agentseat_input* input, struct agentsea
     status->clipboard_status = self->clipboard_status;
     status->clipboard_transfers = self->clipboard_transfers;
     status->clipboard_bytes = self->clipboard_bytes;
+    status->content_serial = self->content_serial;
+    status->content_age_ms = self->content_msec ? monotonic_ms() - self->content_msec : 0;
     status->window_action_token = self->window_action_token;
     status->window_action_status = self->window_action_status;
     status->authorization_token = self->authorization_token;
@@ -959,9 +973,30 @@ void agentseat_input_window_action(struct agentseat_input* input, uint32_t token
 struct as_capture* agentseat_input_capture(struct agentseat_input* input) {
     return input_state(input)->capture;
 }
+size_t agentseat_input_content_changes(const struct agentseat_input* input, uint32_t after_serial,
+    struct agentseat_content_change* out, size_t max, uint32_t* latest, bool* gap) {
+    const struct input_state* self = input_state_const(input);
+    *latest = self ? self->content_serial : 0;
+    *gap = false;
+    if (!self || (int32_t)(self->content_serial - after_serial) <= 0) return 0;
+    uint32_t pending = self->content_serial - after_serial;
+    uint32_t first = after_serial + 1;
+    if (pending > AGENTSEAT_CONTENT_HISTORY) {
+        *gap = true;
+        first = self->content_serial - AGENTSEAT_CONTENT_HISTORY + 1;
+    }
+    size_t count = 0;
+    for (uint32_t serial = first; serial != self->content_serial + 1 && count < max; ++serial) {
+        const struct agentseat_content_change* change = &self->content_history[serial % AGENTSEAT_CONTENT_HISTORY];
+        if (change->serial == serial) out[count++] = *change;
+        else *gap = true;
+    }
+    return count;
+}
+
 json_object* agentseat_input_capture_start(struct agentseat_input* input, const char* socket_path) {
     struct input_state* self = input_state(input);
-    return as_capture_start(self->capture, self->control, socket_path, self->scene.version);
+    return as_capture_start(self->capture, self->control, socket_path, self->scene.version, self->content_serial);
 }
 
 void agentseat_input_geometry(struct agentseat_input* input, uint32_t version) {

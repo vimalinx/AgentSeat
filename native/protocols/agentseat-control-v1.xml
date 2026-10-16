@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="agentseat_control_v1">
   <copyright>Copyright 2026 AgentSeat contributors. MIT license.</copyright>
-  <interface name="agentseat_control_v1" version="3">
+  <interface name="agentseat_control_v1" version="4">
     <description summary="private microhost input delivery gate">
       Internal AgentSeat protocol. Exactly one Wayland client may own the gate.
       Virtual input is accepted only from this same client while granted.
@@ -82,6 +82,19 @@
     </event>
     <event name="clipboard_transfer" since="3">
       <arg name="token" type="uint"/><arg name="bytes" type="uint"/>
+    </event>
+    <event name="content" since="4">
+      <description summary="application output content changed">
+        Sent after an output commit that carried scene damage. Forced
+        repaints for captures and frame-clock commits without damage do not
+        advance the serial. Cursor-only motion is not scene content.
+        The box bounds the damage in output buffer pixels; area is the sum
+        of its damage rectangles in the same units.
+      </description>
+      <arg name="serial" type="uint"/>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="area" type="uint"/>
     </event>
   </interface>
 </protocol>

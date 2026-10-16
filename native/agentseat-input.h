@@ -19,6 +19,16 @@ struct agentseat_scene {
     struct agentseat_window windows[AGENTSEAT_MAX_WINDOWS];
 };
 const struct agentseat_scene* agentseat_input_scene(const struct agentseat_input* input);
+
+#define AGENTSEAT_CONTENT_HISTORY 256
+struct agentseat_content_change {
+    uint32_t serial, area, msec;
+    int x, y, width, height;
+};
+/* Copy retained damaged commits newer than after_serial, oldest first.
+ * *gap is set when older changes after after_serial were already evicted. */
+size_t agentseat_input_content_changes(const struct agentseat_input* input, uint32_t after_serial,
+    struct agentseat_content_change* out, size_t max, uint32_t* latest, bool* gap);
 void agentseat_input_window_action(struct agentseat_input* input, uint32_t token,
     uint32_t window_id, uint32_t action, int first, int second);
 
@@ -30,6 +40,7 @@ struct agentseat_input_status {
     uint32_t control_protocol_version;
     uint32_t window_action_token, window_action_status;
     uint32_t clipboard_token, clipboard_status, clipboard_transfers, clipboard_bytes;
+    uint32_t content_serial, content_age_ms;
     uint32_t authorization_token, authorization_epoch;
     bool authorization_allowed;
     bool gate_allowed;

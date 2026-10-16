@@ -404,6 +404,11 @@ static json_object* output_json(const struct daemon_state* state) {
     json_object_object_add(result, "scale", json_object_new_double(scene->scale_120 / 120.0));
     json_object_object_add(result, "geometry_version", json_object_new_int64(scene->version));
     json_object_object_add(result, "truncated", json_object_new_boolean(scene->truncated));
+    struct agentseat_input_status status = {0};
+    agentseat_input_status(state->input, &status);
+    /* Content serial advances on damaged commits only (protocol v4). */
+    json_object_object_add(result, "content_serial", status.control_protocol_version >= 4 ? json_object_new_int64(status.content_serial) : NULL);
+    json_object_object_add(result, "content_age_ms", status.control_protocol_version >= 4 ? json_object_new_int64(status.content_age_ms) : NULL);
     return result;
 }
 
@@ -800,6 +805,42 @@ static json_object* dispatch(struct daemon_state* state, struct rpc_error* error
         json_object* result = as_capture_get(agentseat_input_capture(state->input), id);
         if (!result) error_set(error, "FRAME_NOT_FOUND", "Frame receipt is absent or expired");
         else json_object_object_add(result, "session_id", json_object_new_string(state->session_id));
+        return result;
+    }
+    if (strcmp(method, "content.changes") == 0) {
+        json_object* after = NULL;
+        if (!json_object_object_get_ex(params, "after_serial", &after) || !json_object_is_type(after, json_type_int) ||
+            json_object_get_int64(after) < 0 || json_object_get_int64(after) > UINT32_MAX) {
+            error_set(error, "INVALID_PARAMS", "after_serial must be an integer from 0 to 4294967295"); return NULL;
+        }
+        struct agentseat_input_status status = {0};
+        agentseat_input_status(state->input, &status);
+        if (status.control_protocol_version < 4) {
+            error_set(error, "UNSUPPORTED", "The microhost does not report content changes"); return NULL;
+        }
+        struct agentseat_content_change changes[AGENTSEAT_CONTENT_HISTORY];
+        uint32_t latest = 0; bool gap = false;
+        size_t count = agentseat_input_content_changes(state->input, (uint32_t)json_object_get_int64(after),
+            changes, AGENTSEAT_CONTENT_HISTORY, &latest, &gap);
+        uint64_t now = monotonic_msec();
+        json_object* result = json_object_new_object();
+        json_object* list = json_object_new_array();
+        for (size_t i = 0; i < count; ++i) {
+            json_object* item = json_object_new_object();
+            json_object_object_add(item, "serial", json_object_new_int64(changes[i].serial));
+            json_object_object_add(item, "x", json_object_new_int(changes[i].x));
+            json_object_object_add(item, "y", json_object_new_int(changes[i].y));
+            json_object_object_add(item, "width", json_object_new_int(changes[i].width));
+            json_object_object_add(item, "height", json_object_new_int(changes[i].height));
+            json_object_object_add(item, "area", json_object_new_int64(changes[i].area));
+            json_object_object_add(item, "age_ms", json_object_new_int64((int64_t)((uint32_t)now - changes[i].msec)));
+            json_object_array_add(list, item);
+        }
+        json_object_object_add(result, "content_serial", json_object_new_int64(latest));
+        json_object_object_add(result, "gap", json_object_new_boolean(gap));
+        json_object_object_add(result, "changes", list);
+        json_object_object_add(result, "output", output_json(state));
+        json_object_object_add(result, "session_id", json_object_new_string(state->session_id));
         return result;
     }
     if (strcmp(method, "request.get") == 0) {

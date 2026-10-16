@@ -67,6 +67,7 @@ struct cg_seat {
 	uint64_t key_deadlines[CG_KEY_COUNT];
 	uint64_t button_deadlines[CG_BUTTON_COUNT];
 	uint32_t control_epoch;
+	uint32_t content_serial;
 	bool control_allowed;
 	uint64_t human_until_msec;
 	unsigned human_grace_ms;
@@ -143,5 +144,6 @@ struct cg_view *seat_get_focus(struct cg_seat *seat);
 void seat_close_focused_application(struct cg_seat *seat);
 void seat_set_focus(struct cg_seat *seat, struct cg_view *view);
 void seat_center_cursor(struct cg_seat *seat);
+void seat_content_committed(struct cg_seat *seat, int x, int y, int width, int height, uint32_t area);
 
 #endif

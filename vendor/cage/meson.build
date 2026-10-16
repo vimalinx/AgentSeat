@@ -42,6 +42,7 @@ wayland_server = dependency('wayland-server')
 wayland_client = dependency('wayland-client')
 wayland_protocols = dependency('wayland-protocols')
 xkbcommon      = dependency('xkbcommon')
+pixman         = dependency('pixman-1')
 math           = cc.find_library('m')
 
 wayland_scanner = find_program('wayland-scanner', native: true)
@@ -176,6 +177,7 @@ executable(
     wayland_client,
     wlroots,
     xkbcommon,
+    pixman,
     math,
   ],
   install: true,
