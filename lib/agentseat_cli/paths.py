@@ -8,7 +8,7 @@ from pathlib import Path
 # This package lives in <root>/lib/agentseat_cli, in the source tree and in a release.
 ROOT = Path(os.environ.get("AGENTSEAT_ROOT", Path(__file__).resolve().parents[2])).resolve()
 CONTROLLER = ROOT / "bin/agentseat"
-AGENTSEAT_VERSION = "0.6.1"
+AGENTSEAT_VERSION = "0.6.2"
 USER_HOME = Path.home()
 XDG_STATE_BASE = Path(os.environ.get("XDG_STATE_HOME", USER_HOME / ".local/state")).expanduser().resolve()
 CONFIG_HOME = Path(

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.2 — 2026-10-16
+
+### Changed
+
+- The controller is now the `lib/agentseat_cli` package (13 modules) behind
+  a thin `bin/agentseat`. Commands, output and errors are unchanged.
+- Documented that `type --keys` still passes through an active input method.
+
 ## 0.6.1 — 2026-10-16
 
 ### Added
