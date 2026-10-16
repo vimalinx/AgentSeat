@@ -25,6 +25,11 @@
 #define PANEL_WIDTH ((int)lround(320 * app_state.ui_scale))
 #define PANEL_HEIGHT ((int)lround(232 * app_state.ui_scale))
 #define HUD_CURSOR_SIZE 20
+/* The head moves for a while after anything changes, then rests and only
+ * blinks, so an idle seat costs the micro-host a few frames per blink. */
+#define LIVELY_US (10 * G_USEC_PER_SEC)
+#define BLINK_INTERVAL_MS 4800
+#define BLINK_US 350000
 
 struct eye_app {
     GtkApplication* application;
@@ -62,7 +67,12 @@ struct eye_app {
     double gaze_y;
     double target_x;
     double target_y;
-    gint64 animation_start;
+    double clock;
+    gint64 clock_tick;
+    gint64 lively_until;
+    gint64 blink_start;
+    guint tick_source;
+    char* activity_key;
     uint64_t rpc_id;
     uint64_t last_message_id;
     char socket_path[108];
@@ -175,11 +185,11 @@ static void draw_eye(GtkDrawingArea* area, cairo_t* cr, int width, int height, g
     cairo_set_source_rgba(cr, 0.663, 0.863, 0.969, 0.98);
     cairo_stroke(cr);
 
-    double elapsed = (g_get_monotonic_time() - app_state.animation_start) / 1000000.0;
-    double phase = fmod(elapsed, 4.8);
+    double elapsed = app_state.clock;
     double blink = 1.0;
-    if (app_state.animations && phase > 4.45) {
-        double t = (phase - 4.45) / 0.35;
+    gint64 blinking = g_get_monotonic_time() - app_state.blink_start;
+    if (app_state.animations && app_state.blink_start && blinking < BLINK_US) {
+        double t = (double)blinking / BLINK_US;
         blink = 0.10 + 0.90 * fabs(cos(t * G_PI));
     }
     /* The reference is a tiny head: pale-blue shell, black face, two white
@@ -218,17 +228,45 @@ static void draw_eye(GtkDrawingArea* area, cairo_t* cr, int width, int height, g
 
 static gboolean animate_eye(gpointer data) {
     (void)data;
-    if (!app_state.animations)
-        return G_SOURCE_CONTINUE;
-    double elapsed = (g_get_monotonic_time() - app_state.animation_start) / 1000000.0;
-    double idle_x = sin(elapsed * 0.62) * 0.62;
-    double idle_y = sin(elapsed * 0.41 + 1.3) * 0.46;
-    app_state.target_x = idle_x;
-    app_state.target_y = idle_y;
-    app_state.gaze_x += (app_state.target_x - app_state.gaze_x) * 0.10;
-    app_state.gaze_y += (app_state.target_y - app_state.gaze_y) * 0.10;
+    gint64 now = g_get_monotonic_time();
+    bool lively = app_state.expanded || now < app_state.lively_until;
+    bool blinking = app_state.blink_start && now - app_state.blink_start < BLINK_US;
+    if (lively) {
+        /* The motion clock only runs while the head is lively, so it resumes
+         * from where it rested instead of jumping. */
+        app_state.clock += MIN(now - app_state.clock_tick, 100000) / 1000000.0;
+        double idle_x = sin(app_state.clock * 0.62) * 0.62;
+        double idle_y = sin(app_state.clock * 0.41 + 1.3) * 0.46;
+        app_state.target_x = idle_x;
+        app_state.target_y = idle_y;
+        app_state.gaze_x += (app_state.target_x - app_state.gaze_x) * 0.10;
+        app_state.gaze_y += (app_state.target_y - app_state.gaze_y) * 0.10;
+    }
+    app_state.clock_tick = now;
     if (app_state.head_area)
         gtk_widget_queue_draw(app_state.head_area);
+    if (lively || blinking)
+        return G_SOURCE_CONTINUE;
+    app_state.tick_source = 0;
+    return G_SOURCE_REMOVE;
+}
+
+static void ensure_ticking(void) {
+    if (!app_state.animations || app_state.tick_source)
+        return;
+    app_state.clock_tick = g_get_monotonic_time();
+    app_state.tick_source = g_timeout_add(33, animate_eye, NULL);
+}
+
+static void mark_lively(void) {
+    app_state.lively_until = g_get_monotonic_time() + LIVELY_US;
+    ensure_ticking();
+}
+
+static gboolean start_blink(gpointer data) {
+    (void)data;
+    app_state.blink_start = g_get_monotonic_time();
+    ensure_ticking();
     return G_SOURCE_CONTINUE;
 }
 
@@ -397,6 +435,7 @@ static void transition_running_changed(GObject* object, GParamSpec* specificatio
 }
 
 static void set_expanded(bool expanded) {
+    mark_lively();
     app_state.expanded = expanded;
     if (app_state.control_button) {
         gtk_widget_set_margin_bottom(app_state.control_button, (int)lround((expanded ? 60 : 4) * app_state.ui_scale));
@@ -455,6 +494,7 @@ static void drag_begin(GtkGestureDrag* gesture, double x, double y, gpointer dat
     (void)x;
     (void)y;
     (void)data;
+    mark_lively();
     app_state.drag_moved = false;
     app_state.move_started = false;
     app_state.drag_origin_x = x;
@@ -598,6 +638,15 @@ static gboolean poll_state(gpointer data) {
             GTK_LABEL(app_state.activity_label),
             summary && summary[0] ? summary : AS_TR("Waiting for Agent"));
         gtk_label_set_text(GTK_LABEL(app_state.detail_label), detail ? detail : "");
+        char* key = g_strdup_printf("%d%d%d\x1f%s\x1f%s", app_state.seat_paused, human_active,
+            app_state.control_known, summary ? summary : "", detail ? detail : "");
+        if (g_strcmp0(key, app_state.activity_key) != 0) {
+            g_free(app_state.activity_key);
+            app_state.activity_key = key;
+            mark_lively();
+        } else {
+            g_free(key);
+        }
         json_object_put(status);
     } else {
         app_state.control_known = false;
@@ -621,6 +670,7 @@ static gboolean poll_state(gpointer data) {
                     json_object_object_get_ex(message, "text", &text_value) &&
                     json_object_object_get_ex(message, "id", &id_value)) {
                     add_message_bubble(json_object_get_string(role_value), json_object_get_string(text_value));
+                    mark_lively();
                     app_state.last_message_id = (uint64_t)json_object_get_int64(id_value);
                 }
             }
@@ -856,7 +906,6 @@ static void activate(GtkApplication* application, gpointer data) {
         g_object_get(settings, "gtk-enable-animations", &animations, NULL);
     }
     app_state.animations = animations;
-    app_state.animation_start = g_get_monotonic_time();
     app_state.arrow_cursor = create_native_arrow_cursor();
 
     app_state.stack = gtk_stack_new();
@@ -895,7 +944,9 @@ static void activate(GtkApplication* application, gpointer data) {
     set_expanded(app_state.demo);
     gtk_window_present(app_state.window);
     g_idle_add(apply_surface_input_region_idle, NULL);
-    g_timeout_add(33, animate_eye, NULL);
+    mark_lively();
+    if (app_state.animations)
+        g_timeout_add(BLINK_INTERVAL_MS, start_blink, NULL);
     g_timeout_add(300, poll_state, NULL);
     poll_state(NULL);
 }
@@ -935,7 +986,6 @@ int main(int argc, char** argv) {
         }
     }
     if (render_head_path) {
-        app_state.animation_start = g_get_monotonic_time();
         cairo_surface_t* surface = cairo_image_surface_create(
             CAIRO_FORMAT_ARGB32, COLLAPSED_SIZE, COLLAPSED_SIZE);
         cairo_t* cr = cairo_create(surface);
