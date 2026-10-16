@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import platform
 import re
 import shlex
 import signal
@@ -1750,7 +1751,105 @@ def observe(path: str | None) -> dict[str, Any]:
         "path": str(output), "backend": "wlr-screencopy", "window": window,
         "capture": {"backend": "native-wlr-screencopy", "scope": "single-app-output", **frame},
         "capture_passes": 1, "settle_ms": 0,
+        # Pass to wait-change --since so a change after this frame is never missed.
+        "content_serial": frame.get("content_serial"),
     }
+
+
+WAIT_CHANGE_DEFAULT_MIN_EXTENT = 5
+
+
+def wait_for_change(
+    since: int | None = None,
+    timeout_ms: int = 5000,
+    region: tuple[float, float, float, float] | None = None,
+    min_area_ratio: float = 0.0,
+    settle_ms: int = 0,
+    min_extent: float = WAIT_CHANGE_DEFAULT_MIN_EXTENT,
+) -> dict[str, Any]:
+    """Wait for damaged application output, read-only and bounded.
+
+    A change qualifies when its damage box is at least min_extent logical
+    pixels wide and tall, covers min_area_ratio of the output and intersects
+    region (normalized x, y, width, height). Thin caret blinks are ignored.
+    """
+    if not 0 <= timeout_ms <= 60000:
+        raise AgentSeatError("INVALID_PARAMS: --timeout-ms must be from 0 to 60000")
+    if not 0 <= settle_ms <= 10000:
+        raise AgentSeatError("INVALID_PARAMS: --settle-ms must be from 0 to 10000")
+    if not 0 <= min_area_ratio <= 1:
+        raise AgentSeatError("INVALID_PARAMS: --min-area-ratio must be from 0 to 1")
+    if not 0 <= min_extent <= 1000:
+        raise AgentSeatError("INVALID_PARAMS: --min-extent must be from 0 to 1000 logical pixels")
+    if region is not None:
+        x, y, width, height = region
+        if not (0 <= x <= 1 and 0 <= y <= 1 and 0 < width <= 1 and 0 < height <= 1):
+            raise AgentSeatError("INVALID_PARAMS: --region uses normalized X Y WIDTH HEIGHT")
+    started = time.monotonic()
+    deadline = started + timeout_ms / 1000
+    if since is None:
+        since = rpc("session.heartbeat").get("output", {}).get("content_serial")
+        if since is None:
+            raise AgentSeatError("UNSUPPORTED: this microhost does not report content changes")
+    elif not 0 <= since < 2**32:
+        raise AgentSeatError("INVALID_PARAMS: --since must be a content serial")
+    cursor = since
+    qualifying = ignored = 0
+    gap = False
+    union: list[int] | None = None
+    last_change: float | None = None
+    output: dict[str, Any] = {}
+    status = "timeout"
+    while True:
+        reply = rpc("content.changes", {"after_serial": cursor})
+        output = reply["output"]
+        pixel_width = max(int(output.get("pixel_width") or 0), 1)
+        pixel_height = max(int(output.get("pixel_height") or 0), 1)
+        min_pixels = min_extent * float(output.get("scale") or 1)
+        if region is not None:
+            rx, ry = region[0] * pixel_width, region[1] * pixel_height
+            rx2, ry2 = rx + region[2] * pixel_width, ry + region[3] * pixel_height
+        if reply["gap"]:
+            # Evicted changes may have qualified; fail toward "changed".
+            gap = True
+            last_change = time.monotonic()
+        for change in reply["changes"]:
+            x1, y1 = change["x"], change["y"]
+            x2, y2 = x1 + change["width"], y1 + change["height"]
+            inside = region is None or (x1 < rx2 and x2 > rx and y1 < ry2 and y2 > ry)
+            large = change["width"] >= min_pixels and change["height"] >= min_pixels
+            if inside and large and change["area"] >= min_area_ratio * pixel_width * pixel_height:
+                qualifying += 1
+                last_change = time.monotonic()
+                union = [x1, y1, x2, y2] if union is None else [
+                    min(union[0], x1), min(union[1], y1), max(union[2], x2), max(union[3], y2)]
+            else:
+                ignored += 1
+        cursor = reply["content_serial"]
+        now = time.monotonic()
+        if last_change is not None and (settle_ms == 0 or now - last_change >= settle_ms / 1000):
+            status = "settled" if settle_ms else "changed"
+            break
+        if now >= deadline:
+            status = "timeout" if last_change is None else "changed_unsettled"
+            break
+        time.sleep(0.02)
+    result: dict[str, Any] = {
+        "status": status, "since_serial": since, "content_serial": cursor,
+        "qualifying_changes": qualifying, "ignored_changes": ignored, "gap": gap,
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+        "min_area_ratio": min_area_ratio, "min_extent": min_extent, "region": list(region) if region else None,
+        "verification": "damage_only; observe to read the new content",
+    }
+    if union is not None:
+        pixel_width = max(int(output.get("pixel_width") or 0), 1)
+        pixel_height = max(int(output.get("pixel_height") or 0), 1)
+        result["changed_box"] = {
+            "x": union[0] / pixel_width, "y": union[1] / pixel_height,
+            "width": (union[2] - union[0]) / pixel_width, "height": (union[3] - union[1]) / pixel_height,
+            "coordinate_space": "normalized-output",
+        }
+    return result
 
 
 def a11y_read(action: str, **params: Any) -> Any:
@@ -1842,6 +1941,172 @@ def semantic_wait(condition: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
 
 def collaboration_status() -> dict[str, Any]:
     return rpc("collaboration.status")
+
+
+def probe_session() -> dict[str, Any]:
+    """Collect read-only session facts; never focuses, acquires or injects."""
+    facts: dict[str, Any] = {"running": bool(microhost_pid() and CONTROL_SOCKET.exists())}
+    if not facts["running"]:
+        return facts
+    try:
+        facts["heartbeat"] = rpc("session.heartbeat")
+        facts["windows"] = rpc("window.list")
+    except AgentSeatError as exc:
+        facts["error"] = str(exc)
+        return facts
+    facts["daemon"] = version().get("daemon") or {}
+    facts["launch"] = load_state().get("launch", {})
+    if facts["launch"].get("a11y"):
+        try:
+            facts["a11y"] = a11y_read("status")
+            snapshot = a11y_read("snapshot", max_nodes=8, max_depth=3)
+            facts["a11y_nodes"] = len(snapshot.get("nodes", []))
+        except AgentSeatError as exc:
+            facts["a11y_error"] = str(exc)
+    return facts
+
+
+def python_module_available(statement: str) -> bool:
+    try:
+        return subprocess.run([sys.executable, "-c", statement], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def doctor(probe_capture: bool = False) -> dict[str, Any]:
+    """Diagnose only: report backends, scope, mapping and degradations."""
+    checks: list[dict[str, Any]] = []
+
+    def check(name: str, status: str, detail: Any = None) -> None:
+        checks.append({"check": name, "status": status, "detail": detail})
+
+    check("python", "ok" if sys.version_info >= (3, 11) else "fail", platform.python_version())
+    hyprland = bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"))
+    check("hyprland_host", "ok" if hyprland else "fail",
+          None if hyprland else "HYPRLAND_INSTANCE_SIGNATURE and hyprctl are required for the host window")
+    check("wayland_display", "ok" if os.environ.get("WAYLAND_DISPLAY") else "fail", None)
+    binaries = {path.name: os.access(path, os.X_OK) for path in (NATIVE_DAEMON, MICROHOST_EXE, EYE_BINARY, RUN_MICROHOST, LAUNCH_APP)}
+    binaries["libagentseat-atk-dispatch.so"] = (ROOT / "lib/libagentseat-atk-dispatch.so").is_file()
+    missing = sorted(name for name, present in binaries.items() if not present)
+    check("runtime_files", "fail" if missing else "ok", {"root": str(ROOT), "missing": missing})
+    check("xwayland", "ok" if Path("/usr/bin/Xwayland").is_file() else "warn",
+          None if Path("/usr/bin/Xwayland").is_file() else "--x11 and --ime fcitx5 are unavailable")
+    atspi = python_module_available("import gi; gi.require_version('Atspi', '2.0'); from gi.repository import Atspi")
+    check("a11y_dependencies", "ok" if atspi else "warn", None if atspi else "--a11y needs Python GObject and AT-SPI2")
+    modules = {name: os.environ.get(name) for name in ("GTK_IM_MODULE", "QT_IM_MODULE", "XMODIFIERS")}
+    check("input_method", "ok", {"modules": modules, "auto_resolves_to": resolve_ime("auto")})
+
+    facts = probe_session()
+    if not facts["running"]:
+        check("session", "skip", "no AgentSeat session for this instance")
+    elif "error" in facts:
+        check("session", "fail", facts["error"])
+    else:
+        heartbeat = facts["heartbeat"]
+        daemon = facts["daemon"]
+        check("session", "ok", {"session_id": heartbeat["session_id"], "uptime_ms": heartbeat.get("uptime_ms"),
+                                "instance": SELECTED_INSTANCE})
+        same_version = daemon.get("version") == AGENTSEAT_VERSION
+        check("daemon_version", "ok" if same_version else "warn",
+              {"controller": AGENTSEAT_VERSION, "daemon": daemon.get("version")})
+        windows = facts["windows"]
+        unverified = [w["id"] for w in windows if not w.get("pid_verified") or not w.get("leased")]
+        output = heartbeat.get("output", {})
+        check("application_scope", "warn" if unverified or output.get("truncated") else "ok",
+              {"windows": len(windows), "unverified_or_unleased": unverified, "truncated": output.get("truncated")})
+        scale = float(output.get("scale") or 0)
+        consistent = scale > 0 and all(abs(output.get(f"pixel_{k}", 0) - output.get(k, 0) * scale) <= 1 for k in ("width", "height"))
+        check("coordinate_mapping", "ok" if consistent else "warn",
+              {"logical": [output.get("width"), output.get("height")],
+               "pixels": [output.get("pixel_width"), output.get("pixel_height")], "scale": scale,
+               "pointer_space": "normalized-output"})
+        check("visual_wait", "ok" if output.get("content_serial") is not None else "warn",
+              None if output.get("content_serial") is not None else "microhost predates content serial; wait-change unavailable")
+        collaboration = heartbeat.get("collaboration", {})
+        writer = heartbeat.get("write_control", {})
+        holder = writer.get("controller_id") or None
+        writable = collaboration.get("agent_allowed") and not heartbeat.get("seat_paused") and holder in {None, RPC_CONTROLLER_ID}
+        check("agent_input", "ok" if writable else "warn",
+              {"seat_paused": heartbeat.get("seat_paused"), "human_active": collaboration.get("human_active"),
+               "write_lease_holder": writer.get("controller_id") or None})
+        ime = facts["launch"].get("ime")
+        check("text_lane", "ok", {"ime": ime, "lane": "keyboard.type" if ime == "simple" else "keyboard.paste (chunked)"})
+        if not facts["launch"].get("a11y"):
+            check("a11y", "skip", "launch with --a11y for semantic reads and actions")
+        elif "a11y_error" in facts:
+            check("a11y", "fail", facts["a11y_error"])
+        else:
+            nodes = facts.get("a11y_nodes", 0)
+            check("a11y", "ok" if nodes > 1 else "warn",
+                  {"scope": facts["a11y"].get("scope"), "sample_nodes": nodes,
+                   "note": None if nodes > 1 else "application exposes no controls beyond its root; use visual input"})
+        if probe_capture:
+            started = time.monotonic()
+            try:
+                frame = rpc("capture.submit")
+                while frame["status"] in {"pending", "encoding"} and time.monotonic() - started < 5:
+                    time.sleep(0.01)
+                    frame = rpc("capture.get", {"frame_id": frame["frame_id"]})
+                matches = [frame.get("width"), frame.get("height")] == [output.get("pixel_width"), output.get("pixel_height")]
+                check("capture", "ok" if frame["status"] == "finished" and matches else "warn",
+                      {"status": frame["status"], "latency_ms": int((time.monotonic() - started) * 1000),
+                       "frame": [frame.get("width"), frame.get("height")], "matches_output_pixels": matches})
+            except AgentSeatError as exc:
+                check("capture", "fail", str(exc))
+        else:
+            check("capture", "skip", "pass --probe-capture to time one private frame")
+    worst = {"ok": 0, "skip": 0, "warn": 1, "fail": 2}
+    level = max((worst[item["status"]] for item in checks), default=0)
+    return {"status": ("ok", "degraded", "failing")[level], "checks": checks,
+            "degradations": [f"{item['check']}: {item['detail']}" for item in checks if item["status"] in {"warn", "fail"}]}
+
+
+def capabilities() -> dict[str, Any]:
+    """Separate implemented, exposed by the application, authorized and available."""
+    facts = probe_session()
+    live = facts["running"] and "error" not in facts
+    heartbeat = facts.get("heartbeat", {})
+    windows = facts.get("windows", [])
+    collaboration = heartbeat.get("collaboration", {})
+    writer = heartbeat.get("write_control", {}).get("controller_id")
+    writes_allowed = live and bool(collaboration.get("agent_allowed")) and not heartbeat.get("seat_paused") and \
+        writer in {"", None, RPC_CONTROLLER_ID}
+    launch = facts.get("launch", {})
+    content = heartbeat.get("output", {}).get("content_serial") is not None
+    clipboard = bool(facts.get("daemon", {}).get("private_clipboard", {}).get("available"))
+    a11y_ready = live and bool(launch.get("a11y")) and "a11y" in facts
+    a11y_nodes = facts.get("a11y_nodes", 0) > 1
+
+    def entry(implemented: bool, exposes: bool | None, authorized: bool | None, reason: str | None = None) -> dict[str, Any]:
+        available = bool(implemented and live and exposes is not False and authorized is not False)
+        return {"implemented": implemented, "application_exposes": exposes, "session_authorized": authorized,
+                "available": available, "reason": None if available else ("no session" if not live else reason)}
+
+    has_windows = bool(windows) if live else None
+    write_reason = "seat paused, human active or another controller holds the write lease"
+    result = {
+        "observe.capture": entry(True, has_windows, True if live else None, "no mapped window"),
+        "observe.wait_change": entry(content, True if live else None, True if live else None,
+                                     None if content else "microhost predates content serial"),
+        "input.pointer": entry(True, has_windows, writes_allowed if live else None, write_reason),
+        "input.keys": entry(True, has_windows, writes_allowed if live else None, write_reason),
+        "input.text": {**entry(True, has_windows, writes_allowed if live else None, write_reason),
+                       "lane": None if not live else ("keyboard.type" if launch.get("ime") == "simple" else "keyboard.paste (chunked)")},
+        "input.private_paste": entry(clipboard, has_windows, writes_allowed if live else None,
+                                     write_reason if clipboard else "daemon has no private clipboard"),
+        "windows.focus_move_resize_close": {**entry(True, has_windows, writes_allowed if live else None, write_reason),
+                                            "verification": "compositor_confirmed"},
+        "semantic.read": entry(True, a11y_nodes if a11y_ready else None, bool(launch.get("a11y")) if live else None,
+                               "launch with --a11y" if live and not launch.get("a11y") else facts.get("a11y_error")),
+        "semantic.actions": {**entry(True, a11y_nodes if a11y_ready else None,
+                                     (bool(launch.get("a11y")) and writes_allowed) if live else None,
+                                     "launch with --a11y" if live and not launch.get("a11y") else write_reason),
+                             "per_node": "inspect a11y get; each node lists its own actions and interfaces"},
+        "semantic.events_wait": entry(True, a11y_nodes if a11y_ready else None, bool(launch.get("a11y")) if live else None,
+                                      "launch with --a11y"),
+    }
+    return {"session": heartbeat.get("session_id"), "controller_id": RPC_CONTROLLER_ID, "capabilities": result}
 
 
 def set_activity(summary: str, detail: str) -> dict[str, Any]:
@@ -2033,6 +2298,17 @@ def main() -> int:
     type_parser.add_argument("text")
     observe_parser = commands.add_parser("observe", help=_("capture the private application output"))
     observe_parser.add_argument("path", nargs="?")
+    doctor_parser = commands.add_parser("doctor", help="diagnose dependencies, scope, mapping and degradations")
+    doctor_parser.add_argument("--probe-capture", action="store_true", help="time one private frame capture")
+    commands.add_parser("capabilities", help="list implemented, exposed, authorized and available capabilities")
+    wait_change_parser = commands.add_parser("wait-change", help="wait until the application output changes")
+    wait_change_parser.add_argument("--since", type=int, help="content_serial from observe; default is now")
+    wait_change_parser.add_argument("--timeout-ms", type=int, default=5000)
+    wait_change_parser.add_argument("--settle-ms", type=int, default=0, help="then wait until changes stop for this long")
+    wait_change_parser.add_argument("--region", type=float, nargs=4, metavar=("X", "Y", "WIDTH", "HEIGHT"))
+    wait_change_parser.add_argument("--min-area-ratio", type=float, default=0.0)
+    wait_change_parser.add_argument("--min-extent", type=float, default=WAIT_CHANGE_DEFAULT_MIN_EXTENT,
+        help="minimum damage width and height in logical pixels")
     commands.add_parser("stop", help=_("stop the current AgentSeat session"))
     args = parser.parse_args()
     if args.controller:
@@ -2213,6 +2489,13 @@ def main() -> int:
                 result = private_unicode_paste(args.text)
     elif args.command == "observe":
         result = observe(args.path)
+    elif args.command == "doctor":
+        result = doctor(args.probe_capture)
+    elif args.command == "capabilities":
+        result = capabilities()
+    elif args.command == "wait-change":
+        result = wait_for_change(args.since, args.timeout_ms, tuple(args.region) if args.region else None,
+            args.min_area_ratio, args.settle_ms, args.min_extent)
     elif args.command == "stop":
         result = stop()
     else:

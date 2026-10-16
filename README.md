@@ -152,10 +152,20 @@ agentseat click
 agentseat type 'hello from the Agent'
 agentseat scroll vertical -120
 agentseat observe
+agentseat wait-change --since SERIAL --timeout-ms 5000
+agentseat doctor
+agentseat capabilities
 agentseat pause
 agentseat resume
 agentseat stop
 ```
+
+The basic loop is `observe → act → wait-change → observe`. `observe` returns a
+`content_serial`; pass it to `wait-change --since` so a change after that frame
+is never missed. Caret blinks, pointer motion and the HUD do not count as
+changes. `doctor` diagnoses dependencies, scope and coordinate mapping without
+changing anything; `capabilities` separates what is implemented, what the
+application exposes, what this session may do and what is available now.
 
 `run` keeps the original single default session for direct Agent operation.
 Use `launch` when each desktop application needs its own independently managed

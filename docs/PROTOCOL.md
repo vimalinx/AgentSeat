@@ -218,6 +218,47 @@ Capture covers the complete single-application output. It refuses an incomplete
 registry or an output containing an explicitly excluded window. This is not a
 per-window crop endpoint.
 
+### Content changes and visual waits
+
+Microhost control protocol v4 reports a `content` serial. It advances only on an
+output commit that carried scene damage. Capture renders, frame-clock commits
+without damage, software-cursor motion and the AgentSeat HUD do not advance it.
+Heartbeat `output` adds `content_serial` and `content_age_ms` (both `null` with
+an older microhost), and every frame receipt carries the `content_serial` at
+submission.
+
+`content.changes` is read-only. It takes `after_serial` and returns the current
+`content_serial`, the retained newer changes oldest first, `output`, and `gap`.
+Each change has `serial`, a damage box (`x`, `y`, `width`, `height` in output
+buffer pixels), `area` (sum of damage rectangles) and `age_ms`. The daemon keeps
+the last 256 changes; `gap: true` means newer changes were evicted or missing,
+so treat the output as changed.
+
+`agentseat wait-change` polls this bounded history. By default it waits from the
+current serial; pass `--since` with the `content_serial` returned by `observe` so
+a change between that frame and the wait is never missed. A change qualifies
+when its damage box is at least `--min-extent` logical pixels wide and tall
+(default 5, wider than a caret blink), covers `--min-area-ratio` of the output
+(default 0) and intersects `--region X Y WIDTH HEIGHT` (normalized); others are
+counted as ignored. `--settle-ms`
+then waits until qualifying changes stop for that long. The result `status` is
+`changed`, `settled`, `changed_unsettled` or `timeout`; `--timeout-ms` is at most
+60000. A change proves only damage, not task completion: observe the content.
+
+### Doctor and capabilities
+
+`agentseat doctor` only reads. It reports host and dependency checks, session
+identity, controller/daemon versions, application scope, coordinate mapping,
+visual-wait support, Agent input state, the text lane and accessibility. With
+`--probe-capture` it times one private frame and compares it with the output
+pixels. It prints IM module names but no other environment values or bus
+addresses. `status` is `ok`, `degraded` or `failing`.
+
+`agentseat capabilities` lists each capability with `implemented`,
+`application_exposes`, `session_authorized` and `available`, plus a `reason`.
+Implemented AT-SPI support does not mean the application exposes controls;
+exposed controls still list their own actions per node in `a11y get`.
+
 ## Optional scoped accessibility
 
 Launch with `run --a11y -- <application>` or `launch --a11y -- <application>`.
