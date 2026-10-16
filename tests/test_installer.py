@@ -21,6 +21,7 @@ def installation(tmp_path):
     (source/'python/agentseat_client.py').write_text('SDK fixture\n')
     (source/'lib').mkdir()
     (source/'lib/libagentseat-atk-dispatch.so').write_bytes(b'ATK dispatch fixture')
+    (source/'lib/agentseat_compat_onlyoffice.py').write_text('compat fixture\n')
     (source/'config').mkdir()
     for name in ['LICENSE','THIRD_PARTY_NOTICES.md','config/config.toml.example']:
         (source/name).write_text('fixture\n')

@@ -4,11 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import csv
 import fcntl
 import gettext
 import hashlib
+import importlib.machinery
 import json
 import math
 import os
@@ -69,7 +68,6 @@ NATIVE_DAEMON = ROOT / "bin/agentseatd"
 EYE_BINARY = ROOT / "bin/agentseat-eye"
 RUN_MICROHOST = ROOT / "bin/run-microhost"
 LAUNCH_APP = ROOT / "bin/launch-app"
-CLIPBOARD_OWNER = ROOT / "bin/x11-clipboard-owner"
 MICROHOST_EXE = ROOT / "bin/agentseat-microhost"
 GRIM = Path("/usr/bin/grim")
 MICROHOST_PID = RUNTIME / "microhost.pid"
@@ -1564,70 +1562,13 @@ def keyboard_key(keycode: int, pressed: bool) -> Any:
     return rpc("keyboard.key", {"keycode": keycode, "pressed": pressed})
 
 
-def onlyoffice_paste(text: str) -> dict[str, Any]:
-    state_value = load_state()
-    display = state_value.get("x_display")
-    if not display:
-        raise AgentSeatError(_("private X display is unavailable"))
-    seat = rpc("seat.status")["seat"]
-    x = float(seat["pointer_x"])
-    y = float(seat["pointer_y"])
-    windows = rpc("window.list")
-    focused_id = str(seat.get("focused_window"))
-    window = next((item for item in windows if str(item["id"]) == focused_id), windows[0] if windows else None)
-    if not window:
-        raise AgentSeatError(_("no OnlyOffice window is available"))
-    encoded = base64.b64encode(text.encode()).decode()
-    owner = subprocess.Popen(
-        [str(CLIPBOARD_OWNER), "--display", str(display), encoded],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        ready = owner.stdout.readline().strip() if owner.stdout else ""
-        if ready != "READY":
-            error = owner.stderr.read().strip() if owner.stderr else ""
-            raise AgentSeatError(error or _("private X clipboard owner failed"))
-        pointer_click(273)
-        time.sleep(0.6)
-        xenv = {**os.environ, "DISPLAY": str(display)}
-        active = run(["xdotool", "getactivewindow"], env=xenv).stdout.strip()
-        geometry = {}
-        for line in run(["xdotool", "getwindowgeometry", "--shell", active], env=xenv).stdout.splitlines():
-            key, separator, value = line.partition("=")
-            if separator and key in {"X", "Y", "WIDTH", "HEIGHT"}:
-                geometry[key] = int(value)
-        menu_image = RUNTIME / "onlyoffice-context-menu.png"
-        run(["import", "-window", active, str(menu_image)], env=xenv)
-        tsv = run(["tesseract", str(menu_image), "stdout", "--psm", "11", "tsv"]).stdout
-        paste_word: dict[str, str] | None = None
-        for row in csv.DictReader(tsv.splitlines(), delimiter="\t"):
-            if row.get("text", "").strip().casefold() == "paste":
-                paste_word = row
-                break
-        if not paste_word:
-            raise AgentSeatError(_("OnlyOffice Paste menu item was not visually detected"))
-        paste_x = (
-            geometry.get("X", 0) + int(paste_word["left"]) + int(paste_word["width"]) / 2.0
-        ) / float(window["width"])
-        paste_y = (
-            geometry.get("Y", 0) + int(paste_word["top"]) + int(paste_word["height"]) / 2.0
-        ) / float(window["height"])
-        pointer_move(paste_x, paste_y)
-        pointer_click(272)
-        # OnlyOffice requests the X11 clipboard asynchronously after the menu
-        # click. Keep the private owner alive until that transfer completes.
-        time.sleep(3.0)
-        pointer_move(x, y)
-    finally:
-        owner.terminate()
-        try:
-            owner.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            owner.terminate()
-    return {"typed": len(text), "lane": "onlyoffice-private-x11-clipboard", "pointer_restored": [x, y]}
+def legacy_onlyoffice_paste(text: str) -> dict[str, Any]:
+    """Load the explicit OnlyOffice compatibility lane for pre-0.5.0 sessions only."""
+    path = ROOT / "lib/agentseat_compat_onlyoffice.py"
+    if not path.is_file():
+        raise AgentSeatError("OnlyOffice compatibility component is not installed; restart the session with `start onlyoffice`")
+    module = importlib.machinery.SourceFileLoader("agentseat_compat_onlyoffice", str(path)).load_module()
+    return module.paste(sys.modules[__name__], text)
 
 
 PASTE_CHUNK_CODEPOINTS = 256
@@ -2479,7 +2420,7 @@ def main() -> int:
             "launch" not in state_value and state_value.get("preset") == "onlyoffice"
         )
         if legacy_onlyoffice:
-            result = onlyoffice_paste(args.text)
+            result = legacy_onlyoffice_paste(args.text)
         else:
             try:
                 result = type_text(args.text)

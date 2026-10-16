@@ -303,8 +303,9 @@ Wayland 应用准确的分数缩放。它不会改写应用的 `QT_*`、`GDK_*` 
 优先权，并会暂时暂停 Agent 输入注入；Agent 的焦点变化只发生在私有应用
 树内。
 
-便捷命令 `start onlyoffice` 与 `run` 使用同一条原生 Wayland 通道。旧的
-私有 X11 粘贴路径只用于兼容早期运行状态，不属于通用核心协议。
+便捷命令 `start onlyoffice` 与 `run` 使用同一条原生 Wayland 通道。旧的私有 X11
+OCR 粘贴路径已移到显式兼容组件 `lib/agentseat_compat_onlyoffice.py`，只为 0.5.0
+之前版本写下的运行时状态加载，不属于核心。
 
 ## 测试
 

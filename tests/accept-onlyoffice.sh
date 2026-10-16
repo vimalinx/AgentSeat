@@ -47,20 +47,24 @@ after_focus=$(printf '%s' "$after" | jq -c '[.host_now.workspace,.host_now.windo
 outer_window=$(printf '%s' "$after" | jq -r '.state.outer_window')
 after_window=$(printf '%s' "$after" | jq -r '.host_now.window')
 [ "$after_window" != "$outer_window" ]
-[ "$(printf '%s' "$type_result" | jq -r .typed)" -eq "${#text}" ]
+# keyboard.type reports typed; the chunked private paste lane reports transferred codepoints.
+[ "$(printf '%s' "$type_result" | jq -r '.typed // .transferred_codepoints')" -eq "${#text}" ]
 [ -s "$evidence" ]
 
 ocr=not-checked
 if command -v tesseract >/dev/null 2>&1; then
     normalized_text=$(printf '%s' "$text" | tr -d ' _')
     # A mostly blank document page is frequently mis-segmented by Tesseract's
-    # automatic page mode. Uniform-block mode keeps the inserted proof line.
-    if tesseract "$evidence" stdout --psm 6 2>/dev/null | tr -d ' _' | grep -Fi "$normalized_text" >/dev/null; then
-        ocr=passed
-    else
-        ocr=failed
-        exit 1
-    fi
+    # automatic page mode. Uniform-block mode keeps the inserted proof line;
+    # sparse mode also reads it when the caret touches its last glyph.
+    ocr=failed
+    for psm in 6 11; do
+        if tesseract "$evidence" stdout --psm "$psm" 2>/dev/null | tr -d ' _' | grep -Fi "$normalized_text" >/dev/null; then
+            ocr=passed
+            break
+        fi
+    done
+    [ "$ocr" = passed ] || exit 1
 fi
 
 jq -n \
@@ -72,5 +76,5 @@ jq -n \
     --arg before_focus "$before_focus" \
     --arg after_focus "$after_focus" \
     --arg ocr "$ocr" \
-    --arg lane "$(printf '%s' "$after" | jq -r 'if (.windows[] | select(.primary) | .xwayland) then "private-xwayland-virtual-keyboard" else "native-wayland-virtual-keyboard" end')" \
+    --arg lane "$(printf '%s' "$type_result" | jq -r '.lane // empty')$(printf '%s' "$after" | jq -r 'if (.windows[] | select(.primary) | .xwayland) then " via private-xwayland" else " via native-wayland" end')" \
     '{passed:true,text:$text,evidence:$evidence,open_probe:$open_probe,type:$type,observe:$observe,host_focus_before:$before_focus,host_focus_after:$after_focus,host_outer_never_active:true,ocr:$ocr,lane:$lane}'

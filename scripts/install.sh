@@ -54,7 +54,7 @@ else
             for name in agentseat agentseat-a11y launch-app run-microhost x11-clipboard-owner agentseatd agentseat-eye agentseat-microhost; do
                 sha256sum "$project_root/bin/$name"
             done
-            sha256sum "$project_root/lib/libagentseat-atk-dispatch.so" "$project_root/python/agentseat_client.py" "$project_root/LICENSE" "$project_root/THIRD_PARTY_NOTICES.md" "$project_root/config/config.toml.example"
+            sha256sum "$project_root/lib/libagentseat-atk-dispatch.so" "$project_root/lib/agentseat_compat_onlyoffice.py" "$project_root/python/agentseat_client.py" "$project_root/LICENSE" "$project_root/THIRD_PARTY_NOTICES.md" "$project_root/config/config.toml.example"
             for language in zh_CN zh_TW; do
                 sha256sum "$project_root/build/locale/$language/LC_MESSAGES/agentseat.mo"
             done
@@ -66,6 +66,7 @@ else
         stage=$(mktemp -d "$install_root/releases/.stage-$digest-XXXXXX")
         install -d "$stage/bin" "$stage/lib" "$stage/share/examples" "$stage/share/locale" "$stage/share/python"
         install -m 0644 "$project_root/lib/libagentseat-atk-dispatch.so" "$stage/lib/libagentseat-atk-dispatch.so"
+        install -m 0644 "$project_root/lib/agentseat_compat_onlyoffice.py" "$stage/lib/agentseat_compat_onlyoffice.py"
         for name in agentseat agentseat-a11y launch-app run-microhost x11-clipboard-owner agentseatd agentseat-eye agentseat-microhost; do
             install -m 0755 "$project_root/bin/$name" "$stage/bin/$name"
         done
@@ -77,7 +78,7 @@ else
             install -d "$stage/share/locale/$language/LC_MESSAGES"
             install -m 0644 "$project_root/build/locale/$language/LC_MESSAGES/agentseat.mo" "$stage/share/locale/$language/LC_MESSAGES/agentseat.mo"
         done
-        (cd "$stage" && sha256sum bin/* lib/*.so share/python/*.py share/LICENSE share/THIRD_PARTY_NOTICES.md share/examples/config.toml share/locale/*/LC_MESSAGES/agentseat.mo) > "$stage/manifest.sha256"
+        (cd "$stage" && sha256sum bin/* lib/*.so lib/*.py share/python/*.py share/LICENSE share/THIRD_PARTY_NOTICES.md share/examples/config.toml share/locale/*/LC_MESSAGES/agentseat.mo) > "$stage/manifest.sha256"
         mv "$stage" "$release"
         stage=
     elif [ ! -f "$release/manifest.sha256" ]; then
