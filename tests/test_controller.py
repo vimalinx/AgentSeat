@@ -36,7 +36,11 @@ def load_script(name: str, path: Path) -> ModuleType:
 
 
 @pytest.fixture
-def controller() -> ModuleType:
+def controller(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    # Keep contract tests independent of any live AgentSeat session.
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("AGENTSEAT_RUNTIME_DIR", str(runtime))
     return load_script("agentseat_controller_test", CONTROLLER_PATH)
 
 
