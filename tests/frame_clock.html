@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>AgentSeat RAF 0</title>
+<style>
+  :root { color-scheme: dark; font: 32px/1.35 sans-serif; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #071018; color: #a9dcf7; }
+  main { text-align: center; }
+  output { display: block; margin-top: 16px; font-variant-numeric: tabular-nums; }
+</style>
+<main>
+  <strong>AgentSeat background frame clock</strong>
+  <output id="counter">0</output>
+</main>
+<script>
+  const counter = document.querySelector("#counter");
+  let frames = 0;
+  function tick() {
+    frames += 1;
+    if (frames % 10 === 0) {
+      counter.value = String(frames);
+      document.title = `AgentSeat RAF ${frames}`;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+</script>
+</html>

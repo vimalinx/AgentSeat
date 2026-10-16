@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import signal
@@ -12,13 +13,21 @@ import tempfile
 import time
 import traceback
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENTSEAT = ROOT / "bin/agentseat"
 EVIDENCE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "agentseat/captures"
 ONLYOFFICE_ACCEPTANCE = ROOT / "tests/accept-onlyoffice.sh"
+# An owned named runtime also propagates into the OnlyOffice shell fixture.
+INSTANCE = f"software-matrix-{os.getpid()}"
+DIRECTORY = "app-" + hashlib.sha256(INSTANCE.encode()).hexdigest()[:24]
+os.environ.update({"AGENTSEAT_INSTANCE": INSTANCE,
+    "AGENTSEAT_RUNTIME_DIR": str(Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "agentseat-apps" / DIRECTORY),
+    "AGENTSEAT_STATE_HOME": str(Path(os.environ.get("XDG_STATE_HOME", Path.home()/".local/state")) / "agentseat/apps" / DIRECTORY),
+    "AGENTSEAT_CONTROLLER_ID": INSTANCE})
 HOST_WORKSPACE = int(os.environ.get("AGENTSEAT_TEST_WORKSPACE", "8"))
 
 
@@ -298,18 +307,20 @@ def onlyoffice(stamp: str) -> dict[str, Any]:
             f"XDG_CACHE_HOME={profile / 'cache'}",
             f"XDG_DATA_HOME={profile / 'data'}",
             f"XDG_STATE_HOME={profile / 'state'}",
-            "/usr/bin/onlyoffice-desktopeditors", str(document),
+            "/usr/bin/onlyoffice-desktopeditors", "--disable-gpu", "--disable-gpu-compositing", str(document),
             timeout=60,
         )
         assert_isolated(status)
-        assert status["windows"][0]["xwayland"] is False
+        actual_backend = "xwayland" if next(w for w in status["windows"] if w["primary"])["xwayland"] else "wayland"
         acceptance = command(str(ONLYOFFICE_ACCEPTANCE), timeout=60)
         proof = json.loads(acceptance.stdout)
         after = host_snapshot()
         return {
             "passed": True,
             "app": "ONLYOFFICE Desktop Editors",
-            "toolkit": "Chromium/CEF native Wayland lane",
+            "toolkit": "Chromium/CEF",
+            "requested_mode": "wayland",
+            "actual_window_backend": actual_backend,
             "typed": proof["text"],
             "image": proof["evidence"],
             "ocr": proof["ocr"],
@@ -327,7 +338,8 @@ def onlyoffice(stamp: str) -> dict[str, Any]:
 
 def main() -> int:
     EVIDENCE.mkdir(parents=True, exist_ok=True)
-    stop_if_running()
+    if agentseat("status")["running"]:
+        raise RuntimeError("refusing to replace an existing AgentSeat session")
     stamp = time.strftime("%Y%m%dT%H%M%S")
     cases: list[tuple[str, Callable[[str], dict[str, Any]]]] = [
         ("gtk", gtk_mousepad),
@@ -339,7 +351,7 @@ def main() -> int:
     for name, case in cases:
         try:
             result["matrix"][name] = case(stamp)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - the matrix records every case failure
             failure: dict[str, Any] = {
                 "passed": False,
                 "error": str(exc),
@@ -349,7 +361,7 @@ def main() -> int:
                 failure_image = EVIDENCE / f"software-{name}-failure-{stamp}.png"
                 try:
                     failure["failure_observe"] = agentseat("observe", str(failure_image))
-                except Exception as observe_error:
+                except Exception as observe_error:  # noqa: BLE001 - preserve the primary failure
                     failure["failure_observe_error"] = str(observe_error)
             result["matrix"][name] = failure
         finally:

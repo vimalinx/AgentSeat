@@ -132,8 +132,8 @@ def main() -> int:
 
         reconnected = agentseat("heartbeat", "--expect-session", session_id)
         agentseat("observe", str(after_image))
-        # The fitted 640x320 output places the expanding entry in its lower
-        # half, centered at about 65% of the output height.
+        # The main surface fills the tile, and the expanding entry covers its
+        # lower portion around 65% of the output height.
         agentseat("move", "0.50", "0.65")
         agentseat("click")
         typed = agentseat("type", marker)

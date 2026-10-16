@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import subprocess
 import time
@@ -14,7 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENTSEAT = ROOT / "bin/agentseat"
 EVIDENCE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "agentseat/captures"
 USER_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
-CONTROL_SOCKET = USER_RUNTIME_DIR / "agentseat/control.sock"
+INSTANCE = f"generic-acceptance-{os.getpid()}"
+INSTANCE_DIRECTORY = "app-" + hashlib.sha256(INSTANCE.encode()).hexdigest()[:24]
+CONTROL_SOCKET = USER_RUNTIME_DIR / "agentseat-apps" / INSTANCE_DIRECTORY / "control.sock"
 MICROHOST_EXE = ROOT / "bin/agentseat-microhost"
 GUI_FIXTURE = ROOT / "tests/gui_fixture.py"
 TEST_WORKSPACE = int(os.environ.get("AGENTSEAT_TEST_WORKSPACE", "8"))
@@ -33,10 +37,19 @@ def agentseat(*argv: str, check: bool = True) -> Any:
     effective_argv = list(argv)
     if effective_argv and effective_argv[0] == "run" and "--host-workspace" not in effective_argv:
         effective_argv[1:1] = ["--host-workspace", str(TEST_WORKSPACE)]
-    result = command(str(AGENTSEAT), *effective_argv, check=check)
+    result = command(str(AGENTSEAT), "--instance", INSTANCE, *effective_argv, check=check)
     if not check:
         return result
     return json.loads(result.stdout)
+
+
+def submit_return() -> None:
+    # These fixtures intentionally exit on Return. A completed UI action may
+    # destroy the daemon before its asynchronous receipt can be read. Each
+    # caller verifies the application's separate proof file after this call.
+    result = agentseat("type", "\n", check=False)
+    if result.returncode:
+        assert "OPERATION_UNCONFIRMED:" in result.stderr, result.stderr
 
 
 def host_signature() -> str:
@@ -97,6 +110,11 @@ def assert_wrapper_never_active(status: dict[str, Any]) -> None:
     assert receipt.get("relation") != "outer-focused"
 
 
+def outer_client(status: dict[str, Any]) -> dict[str, Any]:
+    address = status["state"]["outer_window"]
+    return next(client for client in hypr_json("clients") if client.get("address") == address)
+
+
 def stop_and_verify(marker: Path | None = None) -> dict[str, Any]:
     stopped = agentseat("stop")
     offline = wait_for(lambda: not agentseat("status")["running"], 8, "AgentSeat stayed live after stop")
@@ -110,22 +128,42 @@ def stop_and_verify(marker: Path | None = None) -> dict[str, Any]:
 def wayland_case(stamp: str) -> dict[str, Any]:
     proof = EVIDENCE / f"generic-wayland-input-{stamp}.txt"
     pointer_proof = EVIDENCE / f"generic-wayland-pointer-{stamp}.txt"
+    protocol_log = EVIDENCE / f"generic-wayland-protocol-{stamp}.log"
     image = EVIDENCE / f"generic-wayland-observe-{stamp}.png"
     marker = f"WL_OK_{stamp}"
     before = host_snapshot()
     status = agentseat(
         "run",
         "--",
+        "/usr/bin/env",
+        "WAYLAND_DEBUG=client",
         "/usr/bin/python",
         str(GUI_FIXTURE),
         "--proof", str(proof),
         "--pointer-proof", str(pointer_proof),
+        "--protocol-log", str(protocol_log),
         "--title", "AgentSeat native Wayland GUI",
     )
     assert status["state"]["launch"]["mode"] == "wayland"
-    assert status["state"]["launch"]["argv"][1] == str(GUI_FIXTURE)
+    assert status["state"]["launch"]["argv"][3] == str(GUI_FIXTURE)
     assert status["windows"][0]["xwayland"] is False
     assert status["state"]["backend"] == "cage-microhost"
+    assert status["state"]["physical_pixel_layout"] is True
+    assert status["state"]["buffer_scale"] == status["state"]["host_output_scale"]
+    assert status["state"]["render_scale"] == status["state"]["host_output_scale"]
+    logical_size = status["state"]["viewport_logical_size"]
+    physical_size = status["state"]["physical_buffer_size"]
+    scale = status["state"]["host_output_scale"]
+    assert physical_size == [math.ceil(value * scale) for value in logical_size]
+    assert logical_size[0] > 640 and logical_size[1] > 320
+    assert outer_client(status)["floating"] is False
+    protocol = wait_for(
+        lambda: protocol_log.read_text(encoding="utf-8") if protocol_log.is_file() else None,
+        5,
+        "native client protocol log did not appear",
+    )
+    assert "wp_fractional_scale_manager_v1" in protocol
+    assert f"preferred_scale({round(scale * 120)})" in protocol
     assert_wrapper_never_active(status)
 
     agentseat("pause")
@@ -134,9 +172,9 @@ def wayland_case(stamp: str) -> dict[str, Any]:
     agentseat("resume")
 
     cursor_before = host_snapshot()["cursor"]
-    # The private output now fits the fixture's natural 640x320 buffer exactly.
-    # The full-width proof button is centered at about 29% of its height.
-    agentseat("move", "0.50", "0.29")
+    # The root fills the Hyprland-owned tile; the proof button stays near the
+    # top of the fixture's vertical layout.
+    agentseat("move", "0.50", "0.10")
     cursor_after = host_snapshot()["cursor"]
     agentseat("click")
     assert wait_for_text(pointer_proof).strip() == "clicked"
@@ -147,7 +185,7 @@ def wayland_case(stamp: str) -> dict[str, Any]:
     assert native_capture["backend"] == "wlr-screencopy"
     assert native_capture["capture"]["backend"] == "native-wlr-screencopy"
     assert image.is_file() and image.stat().st_size > 0
-    agentseat("type", "\n")
+    submit_return()
     typed = wait_for_text(proof).strip()
     assert typed == marker
 
@@ -157,6 +195,7 @@ def wayland_case(stamp: str) -> dict[str, Any]:
         "passed": True,
         "proof": str(proof),
         "pointer_proof": str(pointer_proof),
+        "protocol_log": str(protocol_log),
         "image": str(image),
         "typed": typed,
         "window": status["windows"][0],
@@ -177,7 +216,7 @@ def x11_case(stamp: str) -> dict[str, Any]:
     probe = (
         "import pathlib,sys,tkinter as tk; "
         "root=tk.Tk(); root.title('AgentSeat generic X11 probe'); "
-        "entry=tk.Entry(root,font=('Sans',18)); entry.pack(fill='x',padx=30,pady=70); "
+        "entry=tk.Entry(root,font=('Sans',18)); entry.pack(fill='both',expand=True,padx=30,pady=70); "
         "entry.bind('<Button-1>',lambda event:pathlib.Path(sys.argv[2]).write_text('clicked',encoding='utf-8')); "
         "entry.bind('<Return>',lambda event:(pathlib.Path(sys.argv[1]).write_text(entry.get(),encoding='utf-8'),root.destroy())); "
         "entry.focus_set(); root.mainloop()"
@@ -185,12 +224,13 @@ def x11_case(stamp: str) -> dict[str, Any]:
     before = host_snapshot()
     status = agentseat("run", "--x11", "--", "/usr/bin/python", "-c", probe, str(proof), str(pointer_proof))
     assert status["state"]["launch"]["mode"] == "x11"
+    assert status["state"]["physical_pixel_layout"] is True
     assert status["windows"][0]["xwayland"] is True
+    assert outer_client(status)["floating"] is False
     assert_wrapper_never_active(status)
 
     cursor_before = host_snapshot()["cursor"]
-    # Tk keeps its natural geometry; the padded full-width entry is centered
-    # with the window inside the private output.
+    # The X11 root also fills the tile, while the entry fills its padded body.
     agentseat("move", "0.50", "0.50")
     cursor_after = host_snapshot()["cursor"]
     agentseat("click")
@@ -204,7 +244,7 @@ def x11_case(stamp: str) -> dict[str, Any]:
     assert observed["capture"]["backend"] == "native-wlr-screencopy"
     assert image.is_file() and image.stat().st_size > 0
 
-    agentseat("type", "\n")
+    submit_return()
     typed = wait_for_text(proof).strip()
     assert typed == marker
     after = host_snapshot()
@@ -249,23 +289,36 @@ def window_tree_case(stamp: str) -> dict[str, Any]:
         "    def report_geometry():\n"
         "        root.update_idletasks()\n"
         "        pathlib.Path(sys.argv[1]).write_text(json.dumps({'root':[root.winfo_width(),root.winfo_height(),root.winfo_x(),root.winfo_y()],'child':[child.winfo_width(),child.winfo_height(),child.winfo_x(),child.winfo_y()],'dialog':[dialog.winfo_width(),dialog.winfo_height(),dialog.winfo_x(),dialog.winfo_y()]}),encoding='utf-8')\n"
+        "        root.after(50,report_geometry)\n"
         "    root.after(400,report_geometry)\n"
         "root.after(600,open_child)\n"
         "root.mainloop()\n"
     )
     before = host_snapshot()
-    agentseat("run", "--x11", "--", "/usr/bin/python", "-c", probe, str(geometry_proof))
+    started = agentseat("run", "--x11", "--", "/usr/bin/python", "-c", probe, str(geometry_proof))
 
     geometry = json.loads(wait_for_text(geometry_proof))
-    assert geometry["root"][:2] == [800, 600]
+    assert geometry["root"][:2] == started["state"]["viewport_logical_size"]
     assert geometry["child"][:2] == [400, 200]
     assert geometry["dialog"][:2] == [320, 160]
     windows = agentseat("windows")
     status = agentseat("status")
     assert all(window["leased"] for window in windows)
-    assert len(windows) == 1
-    assert status["seat"]["seat"]["focused_window"] == "agentseat:root"
+    assert len(windows) == 3, windows
+    by_title = {w["title"]: w for w in windows}
+    assert by_title["AgentSeat transient dialog"]["parent_id"] == by_title["AgentSeat tree root"]["id"]
+    assert status["seat"]["seat"]["focused_window"] in {w["id"] for w in windows}
 
+    child_id = by_title["AgentSeat parentless child"]["id"]
+    focused = agentseat("window", "focus", child_id)
+    assert focused["execution"] == "finished", focused
+    moved = agentseat("window", "move", child_id, "100", "120")
+    assert moved["execution"] == "finished", moved
+    resized = agentseat("window", "resize", child_id, "420", "220")
+    assert resized["execution"] == "finished", resized
+    wait_for(lambda: json.loads(geometry_proof.read_text())["child"] == [420, 220, 100, 120], 3, "toolkit geometry did not confirm move and resize")
+    updated = agentseat("windows")
+    assert next(w for w in updated if w["id"] == child_id)["focused"]
     observed = agentseat("observe", str(image))
     assert observed["capture"]["scope"] == "single-app-output"
     after = host_snapshot()
@@ -274,7 +327,7 @@ def window_tree_case(stamp: str) -> dict[str, Any]:
         "passed": True,
         "geometry_proof": str(geometry_proof),
         "image": str(image),
-        "requested_geometry_preserved": geometry,
+        "hyprland_tile_geometry": geometry,
         "logical_window_count": len(windows),
         "child_dialog_managed_inside_root": True,
         "transient_dialog_geometry_preserved": True,
@@ -344,7 +397,7 @@ def unicode_case(stamp: str) -> dict[str, Any]:
     wayland_type = agentseat("type", marker)
     assert wayland_type["lane"] == "private-wayland-clipboard"
     agentseat("observe", str(wayland_image))
-    agentseat("type", "\n")
+    submit_return()
     assert wait_for_text(wayland_proof).strip() == marker
     wayland_after = host_snapshot()
     wayland_stopped = stop_and_verify(wayland_proof)
@@ -374,7 +427,7 @@ def unicode_case(stamp: str) -> dict[str, Any]:
     x11_type = agentseat("type", marker)
     assert x11_type["lane"] == "private-wayland-clipboard"
     agentseat("observe", str(x11_image))
-    agentseat("type", "\n")
+    submit_return()
     assert wait_for_text(x11_proof).strip() == marker
     x11_after = host_snapshot()
     x11_stopped = stop_and_verify(x11_proof)
@@ -426,7 +479,7 @@ def lifecycle_case(cycles: int = 3) -> dict[str, Any]:
 def main() -> int:
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     if agentseat("status")["running"]:
-        stop_and_verify()
+        raise RuntimeError("refusing to replace an existing AgentSeat session")
     stamp = time.strftime("%Y%m%dT%H%M%S")
     result: dict[str, Any] = {"stamp": stamp, "host_workspace": TEST_WORKSPACE}
     try:

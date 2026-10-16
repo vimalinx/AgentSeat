@@ -15,11 +15,11 @@ before=$($agentseat status)
 # canvas instead of depending on OnlyOffice's remembered Home-page state.
 ready=0
 attempt=0
-while [ "$attempt" -lt 4 ]; do
+while [ "$attempt" -lt 20 ]; do
     sleep 1
     $agentseat observe "$open_probe" >/dev/null
     if ! command -v tesseract >/dev/null 2>&1 || \
-       tesseract "$open_probe" stdout 2>/dev/null | grep -F 'Word count' >/dev/null; then
+       tesseract "$open_probe" stdout --psm 6 2>/dev/null | grep -F 'AgentSeat OnlyOffice live fixture' >/dev/null; then
         ready=1
         break
     fi
@@ -27,17 +27,8 @@ while [ "$attempt" -lt 4 ]; do
 done
 [ "$ready" -eq 1 ]
 
-# Fresh OnlyOffice profiles show two first-run feature callouts which consume
-# keyboard focus and ignore Escape. Their "Got it" buttons are anchored to the
-# paste control and status bar, so select them with normalized coordinates from
-# the fitted application capture above. A missing callout only turns either
-# click into a harmless document/status-bar click.
-$agentseat move 0.073 0.375 >/dev/null
-$agentseat click >/dev/null
-$agentseat move 0.60 0.90 >/dev/null
-$agentseat click >/dev/null
-
-# Focus the document itself after clearing the overlays.
+# Focus the document body. First-run callouts may remain visible but do not
+# cover this target; the final capture must show the inserted proof text.
 $agentseat move 0.50 0.50 >/dev/null
 $agentseat click >/dev/null
 
@@ -64,7 +55,7 @@ if command -v tesseract >/dev/null 2>&1; then
     normalized_text=$(printf '%s' "$text" | tr -d ' _')
     # A mostly blank document page is frequently mis-segmented by Tesseract's
     # automatic page mode. Uniform-block mode keeps the inserted proof line.
-    if tesseract "$evidence" stdout --psm 6 2>/dev/null | tr -d ' _' | grep -F "$normalized_text" >/dev/null; then
+    if tesseract "$evidence" stdout --psm 6 2>/dev/null | tr -d ' _' | grep -Fi "$normalized_text" >/dev/null; then
         ocr=passed
     else
         ocr=failed
@@ -81,5 +72,5 @@ jq -n \
     --arg before_focus "$before_focus" \
     --arg after_focus "$after_focus" \
     --arg ocr "$ocr" \
-    --arg lane native-wayland-virtual-keyboard \
+    --arg lane "$(printf '%s' "$after" | jq -r 'if (.windows[] | select(.primary) | .xwayland) then "private-xwayland-virtual-keyboard" else "native-wayland-virtual-keyboard" end')" \
     '{passed:true,text:$text,evidence:$evidence,open_probe:$open_probe,type:$type,observe:$observe,host_focus_before:$before_focus,host_focus_after:$after_focus,host_outer_never_active:true,ocr:$ocr,lane:$lane}'

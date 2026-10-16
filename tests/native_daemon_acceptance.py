@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -13,14 +14,17 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-AGENTSEAT = ROOT / "bin/agentseat"
-AGENTSEATD = ROOT / "bin/agentseatd"
-MICROHOST = ROOT / "bin/agentseat-microhost"
+AGENTSEAT = Path(os.environ.get("AGENTSEAT_TEST_CLI", ROOT / "bin/agentseat"))
+AGENTSEATD = AGENTSEAT.resolve().parent / "agentseatd"
+MICROHOST = AGENTSEAT.resolve().parent / "agentseat-microhost"
 LEGACY_INPUT_PROCESS = ROOT / "bin/agentseat-input"
 EVIDENCE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "agentseat/captures"
 USER_RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
-STATE = USER_RUNTIME_DIR / "agentseat/state.json"
-SOCKET = USER_RUNTIME_DIR / "agentseat/control.sock"
+INSTANCE = f"native-acceptance-{os.getpid()}"
+INSTANCE_DIRECTORY = f"app-{hashlib.sha256(INSTANCE.encode()).hexdigest()[:24]}"
+INSTANCE_RUNTIME = USER_RUNTIME_DIR / "agentseat-apps" / INSTANCE_DIRECTORY
+STATE = INSTANCE_RUNTIME / "state.json"
+SOCKET = INSTANCE_RUNTIME / "control.sock"
 TEST_WORKSPACE = int(os.environ.get("AGENTSEAT_TEST_WORKSPACE", "8"))
 if TEST_WORKSPACE < 1:
     raise RuntimeError("AGENTSEAT_TEST_WORKSPACE must be a positive integer")
@@ -40,11 +44,11 @@ def command(*argv: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 
 def agentseat(*argv: str) -> Any:
-    return json.loads(command(str(AGENTSEAT), *argv).stdout)
+    return json.loads(command(str(AGENTSEAT), "--instance", INSTANCE, *argv).stdout)
 
 
 def rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    request = {"jsonrpc": "2.0", "id": time.monotonic_ns(), "method": method, "params": params or {}}
+    request = {"jsonrpc": "2.0", "id": time.monotonic_ns(), "method": method, "params": {"session_id": json.loads(STATE.read_text())["session_id"], "controller_id": "native-test", "request_id": time.monotonic_ns(), **(params or {})}}
     data = (json.dumps(request, separators=(",", ":")) + "\n").encode()
     received = bytearray()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
@@ -120,7 +124,7 @@ def percentile(values: list[float], fraction: float) -> float:
 def main() -> int:
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     if agentseat("status")["running"]:
-        agentseat("stop")
+        raise RuntimeError("refusing to replace an existing AgentSeat session")
 
     started = False
     daemon_pid = 0
@@ -158,6 +162,25 @@ def main() -> int:
         assert heartbeat["session_id"] == state["session_id"]
         assert heartbeat["daemon"]["daemon_pid"] == daemon_pid
         assert heartbeat["microhost_pid"] == microhost_pid
+
+        before_windows = rpc("window.list")["result"]
+        geometry = rpc("window.geometry", {"width": 777, "height": 555})
+        assert geometry["error"]["data"]["kind"] == "UNSUPPORTED"
+        windows = rpc("window.list")
+        assert [(w["id"], w["width"], w["height"]) for w in windows["result"]] == [
+            (w["id"], w["width"], w["height"]) for w in before_windows]
+        output = rpc("session.heartbeat")["result"]["output"]
+        assert [output["width"], output["height"]] == state["viewport_logical_size"]
+
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stalled_client:
+            stalled_client.connect(str(SOCKET))
+            time.sleep(0.05)
+            began = time.perf_counter()
+            recovered = rpc("version")
+            stalled_recovery_ms = (time.perf_counter() - began) * 1000
+        assert "result" in recovered
+        assert stalled_recovery_ms < 2500
+
         latencies_ms: list[float] = []
         for _ in range(300):
             began = time.perf_counter_ns()
@@ -165,12 +188,16 @@ def main() -> int:
             latencies_ms.append((time.perf_counter_ns() - began) / 1_000_000)
             assert "result" in response
 
-        denied_relative = command(str(AGENTSEAT), "observe", "relative.png", check=False)
+        denied_relative = command(
+            str(AGENTSEAT), "--instance", INSTANCE, "observe", "relative.png", check=False
+        )
         assert denied_relative.returncode != 0 and "absolute .png path" in denied_relative.stderr
 
         target.write_bytes(b"not a capture")
         symlink.symlink_to(target)
-        denied_symlink = command(str(AGENTSEAT), "observe", str(symlink), check=False)
+        denied_symlink = command(
+            str(AGENTSEAT), "--instance", INSTANCE, "observe", str(symlink), check=False
+        )
         assert denied_symlink.returncode != 0 and "symbolic link" in denied_symlink.stderr
 
         captured = agentseat("observe", str(capture))
@@ -206,6 +233,8 @@ def main() -> int:
                 "fresh_connection_per_request": heartbeat["connection"] == "fresh-unix-socket-per-request",
                 "application_windows": heartbeat["application_windows"],
             },
+            "geometry_rpc_is_read_only": True,
+            "stalled_client_recovery_ms": round(stalled_recovery_ms, 2),
             "relative_capture_denied": True,
             "symlink_capture_denied": True,
             "capture": captured["capture"],

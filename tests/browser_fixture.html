@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AgentSeat browser acceptance</title>
+<style>
+  body { font: 20px system-ui; max-width: 760px; margin: 40px auto; padding: 0 24px; color: #17202a; }
+  label { display: block; margin: 24px 0 8px; }
+  input, textarea, select, button { font: inherit; padding: 10px; }
+  input[type=text], textarea { box-sizing: border-box; width: 100%; }
+  textarea { height: 120px; }
+  fieldset { margin-top: 30px; padding: 20px; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #edf4f8; padding: 20px; }
+  #spacer { height: 900px; }
+</style>
+<h1>Browser acceptance</h1>
+<p>This local form exercises AgentSeat through browser UI and native dialogs.</p>
+<label for="title">Document title</label><input id="title" type="text">
+<label for="notes">Document notes</label><textarea id="notes"></textarea>
+<label for="priority">Priority</label><select id="priority"><option>Normal</option><option>Urgent</option></select>
+<label><input id="confirm" type="checkbox"> Confirm document</label>
+<fieldset><legend>Local attachment</legend>
+  <label for="attachment">Attachment</label><input id="attachment" type="file" accept=".txt">
+  <p id="attachment-state" role="status">No attachment loaded</p>
+</fieldset>
+<div id="spacer" aria-hidden="true"></div>
+<h2>Generate and download</h2>
+<button id="generate">Generate receipt</button>
+<button id="download" disabled>Download receipt</button>
+<pre id="result" role="status">No receipt generated</pre>
+<script>
+let attachment = '', receipt = '';
+const byId = id => document.getElementById(id);
+byId('attachment').addEventListener('change', async event => {
+  const file = event.target.files[0];
+  attachment = file ? await file.text() : '';
+  byId('attachment-state').textContent = file ? 'Loaded ' + file.name + ': ' + attachment : 'No attachment loaded';
+});
+byId('generate').addEventListener('click', () => {
+  receipt = JSON.stringify({title: byId('title').value, notes: byId('notes').value,
+    priority: byId('priority').value, confirmed: byId('confirm').checked, attachment}, null, 2);
+  byId('result').textContent = receipt;
+  byId('download').disabled = false;
+});
+byId('download').addEventListener('click', () => {
+  const url = URL.createObjectURL(new Blob([receipt], {type: 'text/plain;charset=utf-8'}));
+  const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'browser-receipt.txt';
+  anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+</script>

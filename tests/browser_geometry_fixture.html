@@ -1,0 +1,16 @@
+<!doctype html><meta charset="utf-8"><title>AgentSeat browser geometry</title>
+<style>
+  body { margin:0; font:20px system-ui; }
+  button { position:absolute; width:140px; height:48px; font:inherit; }
+  #alpha { left:80px; top:100px; } #beta { left:480px; top:300px; }
+  #receipt { position:absolute; top:420px; left:80px; }
+</style>
+<button id="alpha">Alpha target</button><button id="beta">Beta target</button>
+<p id="receipt" role="status">No target clicked</p>
+<script>
+let alpha=0,beta=0;
+for (const id of ['alpha','beta']) document.getElementById(id).onclick=()=>{
+  if(id==='alpha')alpha++;else beta++;
+  document.getElementById('receipt').textContent='Alpha '+alpha+' Beta '+beta;
+};
+</script>
