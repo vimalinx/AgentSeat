@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
+import importlib
 import json
 import os
 import socket
 import stat
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from types import ModuleType
@@ -16,6 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROLLER_PATH = ROOT / "bin/agentseat"
+CONTROLLER_PACKAGE = ROOT / "lib/agentseat_cli"
 LAUNCHER_PATH = ROOT / "bin/launch-app"
 EYE_SOURCE_PATH = ROOT / "native/agentseat-eye.c"
 MICROHOST_SOURCE_PATH = ROOT / "vendor/cage/cage.c"
@@ -26,22 +27,22 @@ BUILD_TRANSLATIONS = ROOT / "scripts/build-translations.sh"
 CHECK_TRANSLATIONS = ROOT / "scripts/check-translations.sh"
 
 
-def load_script(name: str, path: Path) -> ModuleType:
-    loader = importlib.machinery.SourceFileLoader(name, str(path))
-    spec = importlib.util.spec_from_loader(name, loader)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+def load_controller() -> Any:
+    """Import a fresh controller package so path constants follow this test's env."""
+    for name in [name for name in sys.modules if name == "agentseat_cli" or name.startswith("agentseat_cli.")]:
+        del sys.modules[name]
+    if str(CONTROLLER_PACKAGE.parent) not in sys.path:
+        sys.path.insert(0, str(CONTROLLER_PACKAGE.parent))
+    return importlib.import_module("agentseat_cli").Controller()
 
 
 @pytest.fixture
-def controller(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+def controller(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     # Keep contract tests independent of any live AgentSeat session.
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=0o700)
     monkeypatch.setenv("AGENTSEAT_RUNTIME_DIR", str(runtime))
-    return load_script("agentseat_controller_test", CONTROLLER_PATH)
+    return load_controller()
 
 
 def test_normalize_argv_requires_a_real_command(controller: ModuleType) -> None:
@@ -765,8 +766,9 @@ def test_microhost_uses_native_hidpi_without_app_zoom_and_keeps_frame_fallback()
     assert "wp_viewport_set_destination" in output_source
     assert "AGENTSEAT_PHYSICAL_LAYOUT" not in output_source
     assert "Xft.dpi" not in launcher_source
-    assert "resizewindowpixel" not in CONTROLLER_PATH.read_text(encoding="utf-8")
-    assert '"float true"' not in CONTROLLER_PATH.read_text(encoding="utf-8")
+    controller_source = "".join(path.read_text(encoding="utf-8") for path in CONTROLLER_PACKAGE.glob("*.py"))
+    assert "resizewindowpixel" not in controller_source
+    assert '"float true"' not in controller_source
     assert "view->impl->configure(view, layout_box.width, layout_box.height, true);" in view_source
     assert "view->server->primary_view = view;" in xdg_shell_source
     assert "wlr_xdg_toplevel_set_fullscreen(xdg_shell_view->xdg_toplevel, fill_output);" in xdg_shell_source

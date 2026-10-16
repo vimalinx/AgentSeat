@@ -16,7 +16,7 @@ for tool in xgettext msgcat msgmerge; do
 done
 
 xgettext --from-code=UTF-8 --language=Python --keyword=_ \
-    -o "$temporary_dir/python.pot" bin/agentseat
+    -o "$temporary_dir/python.pot" lib/agentseat_cli/*.py
 xgettext --from-code=UTF-8 --language=C --keyword=AS_TR \
     -o "$temporary_dir/native.pot" \
     native/agentseat-eye.c native/agentseatd.c native/agentseat-input.c

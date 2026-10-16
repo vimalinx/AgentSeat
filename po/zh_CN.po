@@ -2,7 +2,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: AgentSeat 0.5.2\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-16 21:07+0800\n"
+"POT-Creation-Date: 2026-10-16 21:20+0800\n"
 "PO-Revision-Date: 2026-08-31 00:00+0800\n"
 "Last-Translator: AgentSeat contributors\n"
 "Language-Team: Simplified Chinese\n"
@@ -12,573 +12,573 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: bin/agentseat:201
-msgid "language must be auto, en, zh-CN, or zh-TW"
-msgstr "语言必须是 auto、en、zh-CN 或 zh-TW"
+#: lib/agentseat_cli/cli.py:26
+msgid "Operate one local application with a private AI pointer and keyboard."
+msgstr "使用 AI 的私有指针和键盘操作一个本地应用。"
 
-#: bin/agentseat:211
-#, python-format
-msgid "%(heading)s:"
-msgstr "%(heading)s："
+#: lib/agentseat_cli/cli.py:32
+msgid "interface language: auto, en, zh-CN, or zh-TW"
+msgstr "界面语言：auto、en、zh-CN 或 zh-TW"
 
-#: bin/agentseat:212
-msgid "usage: "
-msgstr "用法："
+#: lib/agentseat_cli/cli.py:38
+msgid "operate one named AgentSeat application instance"
+msgstr "操作一个具名的 AgentSeat 应用实例"
 
-#: bin/agentseat:213
-#, python-format
-msgid " (default: %(default)s)"
-msgstr "（默认值：%(default)s）"
+#: lib/agentseat_cli/cli.py:55
+msgid "start a legacy verified demo"
+msgstr "启动已验证的旧版演示"
 
-#: bin/agentseat:214
-#, python-format
-msgid "argument %(argument_name)s: %(message)s"
-msgstr "参数 %(argument_name)s：%(message)s"
+#: lib/agentseat_cli/cli.py:61 lib/agentseat_cli/cli.py:81
+msgid "place the outer window on this host workspace"
+msgstr "将外层窗口放到这个宿主工作区"
 
-#: bin/agentseat:215
-msgid "show program's version number and exit"
-msgstr "显示程序版本号并退出"
+#: lib/agentseat_cli/cli.py:63
+msgid "wrap an arbitrary application command"
+msgstr "封装任意应用命令"
 
-#: bin/agentseat:216
-#, python-format
-msgid "unknown parser %(parser_name)r (choices: %(choices)s)"
-msgstr "未知解析器 %(parser_name)r（可选：%(choices)s）"
+#: lib/agentseat_cli/cli.py:67 lib/agentseat_cli/cli.py:91
+msgid "force the generic private-XWayland compatibility lane"
+msgstr "强制使用通用私有 XWayland 兼容通道"
 
-#: bin/agentseat:217
-#, python-format
-msgid "command '%(parser_name)s' is deprecated"
-msgstr "命令“%(parser_name)s”已弃用"
+#: lib/agentseat_cli/cli.py:72 lib/agentseat_cli/cli.py:96
+msgid "run the application on a private D-Bus session bus"
+msgstr "在私有 D-Bus 会话总线上运行应用"
 
-#: bin/agentseat:218
-#, python-format
-msgid "argument \"-\" with mode %r"
-msgstr "参数“-”使用模式 %r"
+#: lib/agentseat_cli/cli.py:76 lib/agentseat_cli/cli.py:100
+msgid "working directory for the wrapped application"
+msgstr "被封装应用的工作目录"
 
-#: bin/agentseat:219
-#, python-format
-msgid "can't open '%(filename)s': %(error)s"
-msgstr "无法打开“%(filename)s”：%(error)s"
+#: lib/agentseat_cli/cli.py:83 lib/agentseat_cli/cli.py:107
+msgid "application command after --"
+msgstr "-- 后的应用命令"
 
-#: bin/agentseat:220
-msgid "positional arguments"
-msgstr "位置参数"
+#: lib/agentseat_cli/cli.py:86
+msgid "wrap an application in a new automatically named instance"
+msgstr "在自动命名的新实例中封装应用"
 
-#: bin/agentseat:221
-msgid "options"
-msgstr "选项"
+#: lib/agentseat_cli/cli.py:105
+msgid "place the outer window on the current or named host workspace"
+msgstr "将外层窗口放到当前或指定的宿主工作区"
 
-#: bin/agentseat:222
-msgid "show this help message and exit"
-msgstr "显示此帮助信息并退出"
+#: lib/agentseat_cli/cli.py:108
+msgid "show the controller and protocol version"
+msgstr "显示控制器和协议版本"
 
-#: bin/agentseat:223
-msgid "subcommands"
-msgstr "子命令"
+#: lib/agentseat_cli/cli.py:109
+msgid "show AgentSeat's XDG storage locations"
+msgstr "显示 AgentSeat 的 XDG 存储位置"
 
-#: bin/agentseat:224
-#, python-format
-msgid "unrecognized arguments: %s"
-msgstr "无法识别的参数：%s"
+#: lib/agentseat_cli/cli.py:110
+msgid "show the effective AgentSeat configuration"
+msgstr "显示当前生效的 AgentSeat 配置"
 
-#: bin/agentseat:225
-#, python-format
-msgid "not allowed with argument %s"
-msgstr "不能与参数 %s 同时使用"
+#: lib/agentseat_cli/cli.py:111
+msgid "show the current AgentSeat session"
+msgstr "显示当前 AgentSeat 会话"
 
-#: bin/agentseat:226
-#, python-format
-msgid "ambiguous option: %(option)s could match %(matches)s"
-msgstr "选项不明确：%(option)s 可能匹配 %(matches)s"
+#: lib/agentseat_cli/cli.py:112
+msgid "list named AgentSeat application instances"
+msgstr "列出具名的 AgentSeat 应用实例"
 
-#: bin/agentseat:227
-#, python-format
-msgid "ignored explicit argument %r"
-msgstr "已忽略显式参数 %r"
+#: lib/agentseat_cli/cli.py:115
+msgid "verify that the current application session can be reconnected"
+msgstr "验证当前应用会话是否可以重新连接"
 
-#: bin/agentseat:228
-#, python-format
-msgid "option '%(option)s' is deprecated"
-msgstr "选项“%(option)s”已弃用"
+#: lib/agentseat_cli/cli.py:119 lib/agentseat_cli/cli.py:139
+msgid "fail if the connected session does not have this identity"
+msgstr "如果已连接会话不是此身份则失败"
 
-#: bin/agentseat:229
-#, python-format
-msgid "argument '%(argument_name)s' is deprecated"
-msgstr "参数“%(argument_name)s”已弃用"
+#: lib/agentseat_cli/cli.py:123
+msgid "continuously reconnect and stream session heartbeats"
+msgstr "持续重新连接并输出会话心跳流"
 
-#: bin/agentseat:230
-#, python-format
-msgid "the following arguments are required: %s"
-msgstr "必须提供以下参数：%s"
+#: lib/agentseat_cli/cli.py:129
+msgid "seconds between reconnect checks"
+msgstr "两次重连检查之间的秒数"
 
-#: bin/agentseat:231
-#, python-format
-msgid "one of the arguments %s is required"
-msgstr "必须提供参数 %s 中的一个"
+#: lib/agentseat_cli/cli.py:135
+msgid "number of checks; zero keeps watching until interrupted"
+msgstr "检查次数；0 表示持续监测直到被中断"
 
-#: bin/agentseat:232
-msgid "expected one argument"
-msgstr "需要一个参数"
+#: lib/agentseat_cli/cli.py:141
+msgid "control the embedded private-microhost AI head"
+msgstr "控制嵌入私有微宿主的 AI 小脑袋"
 
-#: bin/agentseat:233
-msgid "expected at most one argument"
-msgstr "最多只能提供一个参数"
+#: lib/agentseat_cli/cli.py:143
+msgid "show human-priority and AI activity state"
+msgstr "显示人类优先级和 AI 活动状态"
 
-#: bin/agentseat:234
-msgid "expected at least one argument"
-msgstr "至少需要一个参数"
+#: lib/agentseat_cli/cli.py:144
+msgid "publish the Agent's current AgentSeat action"
+msgstr "发布 Agent 当前的 AgentSeat 操作"
 
-#: bin/agentseat:235
-#, python-format
-msgid "unexpected option string: %s"
-msgstr "意外的选项字符串：%s"
+#: lib/agentseat_cli/cli.py:147
+msgid "read messages sent from the eye HUD"
+msgstr "读取从小脑袋 HUD 发来的消息"
 
-#: bin/agentseat:236
-#, python-format
-msgid "invalid %(type)s value: %(value)r"
-msgstr "无效的 %(type)s 值：%(value)r"
+#: lib/agentseat_cli/cli.py:149
+msgid "reply to the human in the eye HUD"
+msgstr "回复小脑袋 HUD 中的人类"
 
-#: bin/agentseat:237
-#, python-format
-msgid "invalid choice: %(value)r (choose from %(choices)s)"
-msgstr "无效选择：%(value)r（可选：%(choices)s）"
+#: lib/agentseat_cli/cli.py:171
+msgid "list windows in the wrapped application tree"
+msgstr "列出被封装应用树中的窗口"
 
-#: bin/agentseat:238
-#, python-format
-msgid "%(prog)s: error: %(message)s\n"
-msgstr "%(prog)s：错误：%(message)s\n"
+#: lib/agentseat_cli/cli.py:172
+msgid "pause Agent input"
+msgstr "暂停 Agent 输入"
 
-#: bin/agentseat:239
-#, python-format
-msgid "%(prog)s: warning: %(message)s\n"
-msgstr "%(prog)s：警告：%(message)s\n"
+#: lib/agentseat_cli/cli.py:173
+msgid "resume Agent input"
+msgstr "恢复 Agent 输入"
 
-#: bin/agentseat:258
+#: lib/agentseat_cli/cli.py:174
+msgid "move the private pointer using normalized coordinates"
+msgstr "使用归一化坐标移动私有指针"
+
+#: lib/agentseat_cli/cli.py:177
+msgid "click with the private pointer"
+msgstr "使用私有指针点击"
+
+#: lib/agentseat_cli/cli.py:179
+msgid "scroll inside the wrapped application"
+msgstr "在被封装应用内滚动"
+
+#: lib/agentseat_cli/cli.py:182
+msgid "send one scoped evdev key event"
+msgstr "发送一个限定范围的 evdev 按键事件"
+
+#: lib/agentseat_cli/cli.py:185
+msgid "type text with the private keyboard"
+msgstr "使用私有键盘输入文本"
+
+#: lib/agentseat_cli/cli.py:189
+msgid ""
+"send key events instead of a private paste, for applications that ignore "
+"paste"
+msgstr "发送按键事件而不是私有粘贴，用于不接受粘贴的应用"
+
+#: lib/agentseat_cli/cli.py:190
+msgid "capture the private application output"
+msgstr "截取私有应用输出"
+
+#: lib/agentseat_cli/cli.py:203
+msgid "stop the current AgentSeat session"
+msgstr "停止当前 AgentSeat 会话"
+
+#: lib/agentseat_cli/cli.py:212
+#, python-brace-format
+msgid "--instance cannot be combined with {command}"
+msgstr "--instance 不能与 {command} 同时使用"
+
+#: lib/agentseat_cli/cli.py:386
+msgid "unknown command"
+msgstr "未知命令"
+
+#: lib/agentseat_cli/common.py:38
 #, python-brace-format
 msgid "command failed: {command}"
 msgstr "命令执行失败：{command}"
 
-#: bin/agentseat:280
+#: lib/agentseat_cli/common.py:60
 msgid "memory-only; cleared when the daemon exits"
 msgstr "仅存于内存；守护进程退出时清除"
 
-#: bin/agentseat:281
+#: lib/agentseat_cli/common.py:61
 msgid "volatile; removed by the user session runtime manager"
 msgstr "临时数据；由用户会话运行时管理器清除"
 
-#: bin/agentseat:282
+#: lib/agentseat_cli/common.py:62
 msgid "written only when observe is requested"
 msgstr "仅在请求 observe 时写入"
 
-#: bin/agentseat:295
+#: lib/agentseat_cli/common.py:75
 #, python-brace-format
 msgid "cannot read AgentSeat configuration {path}: {error}"
 msgstr "无法读取 AgentSeat 配置 {path}：{error}"
 
-#: bin/agentseat:299
+#: lib/agentseat_cli/common.py:79
 msgid "AgentSeat configuration [general] must be a table"
 msgstr "AgentSeat 配置中的 [general] 必须是表"
 
-#: bin/agentseat:308
+#: lib/agentseat_cli/common.py:88
 msgid "general.default_workspace must be a positive integer"
 msgstr "general.default_workspace 必须是正整数"
 
-#: bin/agentseat:310
+#: lib/agentseat_cli/common.py:90
 msgid "general.human_priority_grace_ms must be an integer from 0 to 60000"
 msgstr "general.human_priority_grace_ms 必须是 0 到 60000 之间的整数"
 
-#: bin/agentseat:312
+#: lib/agentseat_cli/common.py:92
 msgid "general.eye_hud must be true or false"
 msgstr "general.eye_hud 必须是 true 或 false"
 
-#: bin/agentseat:314 bin/agentseat:318
+#: lib/agentseat_cli/common.py:94 lib/agentseat_cli/common.py:98
 msgid "general.language must be auto, en, zh-CN, or zh-TW"
 msgstr "general.language 必须是 auto、en、zh-CN 或 zh-TW"
 
-#: bin/agentseat:356 bin/agentseat:364
+#: lib/agentseat_cli/common.py:136 lib/agentseat_cli/common.py:144
 #, python-brace-format
 msgid "refusing to use an unexpected AgentSeat lifecycle lock: {path}"
 msgstr "拒绝使用异常的 AgentSeat 生命周期锁：{path}"
 
-#: bin/agentseat:517
+#: lib/agentseat_cli/common.py:202
+msgid "run requires a non-empty command after --"
+msgstr "run 要求在 -- 后提供非空命令"
+
+#: lib/agentseat_cli/common.py:210
+#, python-brace-format
+msgid "working directory does not exist: {path}"
+msgstr "工作目录不存在：{path}"
+
+#: lib/agentseat_cli/desktop.py:17
 msgid "host Hyprland instance not found"
 msgstr "找不到宿主 Hyprland 实例"
 
-#: bin/agentseat:575
+#: lib/agentseat_cli/desktop.py:58
+msgid "host workspace must be a positive integer"
+msgstr "宿主工作区必须是正整数"
+
+#: lib/agentseat_cli/i18n.py:117
+msgid "language must be auto, en, zh-CN, or zh-TW"
+msgstr "语言必须是 auto、en、zh-CN 或 zh-TW"
+
+#: lib/agentseat_cli/i18n.py:127
+#, python-format
+msgid "%(heading)s:"
+msgstr "%(heading)s："
+
+#: lib/agentseat_cli/i18n.py:128
+msgid "usage: "
+msgstr "用法："
+
+#: lib/agentseat_cli/i18n.py:129
+#, python-format
+msgid " (default: %(default)s)"
+msgstr "（默认值：%(default)s）"
+
+#: lib/agentseat_cli/i18n.py:130
+#, python-format
+msgid "argument %(argument_name)s: %(message)s"
+msgstr "参数 %(argument_name)s：%(message)s"
+
+#: lib/agentseat_cli/i18n.py:131
+msgid "show program's version number and exit"
+msgstr "显示程序版本号并退出"
+
+#: lib/agentseat_cli/i18n.py:132
+#, python-format
+msgid "unknown parser %(parser_name)r (choices: %(choices)s)"
+msgstr "未知解析器 %(parser_name)r（可选：%(choices)s）"
+
+#: lib/agentseat_cli/i18n.py:133
+#, python-format
+msgid "command '%(parser_name)s' is deprecated"
+msgstr "命令“%(parser_name)s”已弃用"
+
+#: lib/agentseat_cli/i18n.py:134
+#, python-format
+msgid "argument \"-\" with mode %r"
+msgstr "参数“-”使用模式 %r"
+
+#: lib/agentseat_cli/i18n.py:135
+#, python-format
+msgid "can't open '%(filename)s': %(error)s"
+msgstr "无法打开“%(filename)s”：%(error)s"
+
+#: lib/agentseat_cli/i18n.py:136
+msgid "positional arguments"
+msgstr "位置参数"
+
+#: lib/agentseat_cli/i18n.py:137
+msgid "options"
+msgstr "选项"
+
+#: lib/agentseat_cli/i18n.py:138
+msgid "show this help message and exit"
+msgstr "显示此帮助信息并退出"
+
+#: lib/agentseat_cli/i18n.py:139
+msgid "subcommands"
+msgstr "子命令"
+
+#: lib/agentseat_cli/i18n.py:140
+#, python-format
+msgid "unrecognized arguments: %s"
+msgstr "无法识别的参数：%s"
+
+#: lib/agentseat_cli/i18n.py:141
+#, python-format
+msgid "not allowed with argument %s"
+msgstr "不能与参数 %s 同时使用"
+
+#: lib/agentseat_cli/i18n.py:142
+#, python-format
+msgid "ambiguous option: %(option)s could match %(matches)s"
+msgstr "选项不明确：%(option)s 可能匹配 %(matches)s"
+
+#: lib/agentseat_cli/i18n.py:143
+#, python-format
+msgid "ignored explicit argument %r"
+msgstr "已忽略显式参数 %r"
+
+#: lib/agentseat_cli/i18n.py:144
+#, python-format
+msgid "option '%(option)s' is deprecated"
+msgstr "选项“%(option)s”已弃用"
+
+#: lib/agentseat_cli/i18n.py:145
+#, python-format
+msgid "argument '%(argument_name)s' is deprecated"
+msgstr "参数“%(argument_name)s”已弃用"
+
+#: lib/agentseat_cli/i18n.py:146
+#, python-format
+msgid "the following arguments are required: %s"
+msgstr "必须提供以下参数：%s"
+
+#: lib/agentseat_cli/i18n.py:147
+#, python-format
+msgid "one of the arguments %s is required"
+msgstr "必须提供参数 %s 中的一个"
+
+#: lib/agentseat_cli/i18n.py:148
+msgid "expected one argument"
+msgstr "需要一个参数"
+
+#: lib/agentseat_cli/i18n.py:149
+msgid "expected at most one argument"
+msgstr "最多只能提供一个参数"
+
+#: lib/agentseat_cli/i18n.py:150
+msgid "expected at least one argument"
+msgstr "至少需要一个参数"
+
+#: lib/agentseat_cli/i18n.py:151
+#, python-format
+msgid "unexpected option string: %s"
+msgstr "意外的选项字符串：%s"
+
+#: lib/agentseat_cli/i18n.py:152
+#, python-format
+msgid "invalid %(type)s value: %(value)r"
+msgstr "无效的 %(type)s 值：%(value)r"
+
+#: lib/agentseat_cli/i18n.py:153
+#, python-format
+msgid "invalid choice: %(value)r (choose from %(choices)s)"
+msgstr "无效选择：%(value)r（可选：%(choices)s）"
+
+#: lib/agentseat_cli/i18n.py:154
+#, python-format
+msgid "%(prog)s: error: %(message)s\n"
+msgstr "%(prog)s：错误：%(message)s\n"
+
+#: lib/agentseat_cli/i18n.py:155
+#, python-format
+msgid "%(prog)s: warning: %(message)s\n"
+msgstr "%(prog)s：警告：%(message)s\n"
+
+#: lib/agentseat_cli/instances.py:67
 msgid ""
 "instance identifier must use 1-48 letters, digits, dots, underscores, or "
 "hyphens"
 msgstr "实例标识必须由 1-48 个字母、数字、点、下划线或连字符组成"
 
-#: bin/agentseat:646
+#: lib/agentseat_cli/instances.py:138
 msgid "could not allocate a unique AgentSeat instance identifier"
 msgstr "无法分配唯一的 AgentSeat 实例标识"
 
-#: bin/agentseat:654
+#: lib/agentseat_cli/instances.py:146
 msgid "current host workspace is unavailable"
 msgstr "当前宿主工作区不可用"
 
-#: bin/agentseat:658 bin/agentseat:660
+#: lib/agentseat_cli/instances.py:150 lib/agentseat_cli/instances.py:152
 msgid "host workspace must be 'current' or a positive integer"
 msgstr "宿主工作区必须是“current”或正整数"
 
-#: bin/agentseat:666
-msgid "host workspace must be a positive integer"
-msgstr "宿主工作区必须是正整数"
-
-#: bin/agentseat:816
-msgid "AgentSeat daemon response exceeds 1 MiB"
-msgstr "AgentSeat 守护进程响应超过 1 MiB"
-
-#: bin/agentseat:818
-#, python-brace-format
-msgid "cannot reach AgentSeat daemon: {error}"
-msgstr "无法连接 AgentSeat 守护进程：{error}"
-
-#: bin/agentseat:823
-msgid "AgentSeat daemon returned no response"
-msgstr "AgentSeat 守护进程没有返回响应"
-
-#: bin/agentseat:827
-#, python-brace-format
-msgid "invalid AgentSeat daemon response: {error}"
-msgstr "AgentSeat 守护进程响应无效：{error}"
-
-#: bin/agentseat:829
-msgid "AgentSeat daemon response ID mismatch"
-msgstr "AgentSeat 守护进程响应 ID 不匹配"
-
-#: bin/agentseat:834
-msgid "AgentSeat daemon rejected the request"
-msgstr "AgentSeat 守护进程拒绝了请求"
-
-#: bin/agentseat:875
-msgid "run requires a non-empty command after --"
-msgstr "run 要求在 -- 后提供非空命令"
-
-#: bin/agentseat:883
-#, python-brace-format
-msgid "working directory does not exist: {path}"
-msgstr "工作目录不存在：{path}"
-
-#: bin/agentseat:924
+#: lib/agentseat_cli/lifecycle.py:91
 #, python-brace-format
 msgid "unsupported display mode: {mode}"
 msgstr "不支持的显示模式：{mode}"
 
-#: bin/agentseat:983
+#: lib/agentseat_cli/lifecycle.py:128
 #, python-brace-format
 msgid "unknown legacy preset: {preset}"
 msgstr "未知的旧版预设：{preset}"
 
-#: bin/agentseat:1023
+#: lib/agentseat_cli/lifecycle.py:163
 msgid ""
 "AgentSeat is already running another application; stop it before launching a "
 "different command"
 msgstr "AgentSeat 正在运行另一个应用；请先停止它再启动不同命令"
 
-#: bin/agentseat:1026
+#: lib/agentseat_cli/lifecycle.py:166
 msgid ""
 "an unmanaged AgentSeat micro-host is already running; run agentseat stop "
 "first"
 msgstr "已有未受管理的 AgentSeat 微宿主在运行；请先执行 agentseat stop"
 
-#: bin/agentseat:1049
+#: lib/agentseat_cli/lifecycle.py:189
 msgid "AgentSeat micro-host did not appear"
 msgstr "AgentSeat 微宿主未出现"
 
-#: bin/agentseat:1053
+#: lib/agentseat_cli/lifecycle.py:193
 msgid "outer AgentSeat window did not appear"
 msgstr "AgentSeat 外层窗口未出现"
 
-#: bin/agentseat:1057
+#: lib/agentseat_cli/lifecycle.py:197
 #, python-brace-format
 msgid "AgentSeat outer window did not map on requested workspace {workspace}"
 msgstr "AgentSeat 外层窗口未映射到指定工作区 {workspace}"
 
-#: bin/agentseat:1063
+#: lib/agentseat_cli/lifecycle.py:203
 #, python-brace-format
 msgid "native AgentSeat daemon is missing or not executable: {path}"
 msgstr "原生 AgentSeat 守护进程缺失或不可执行：{path}"
 
-#: bin/agentseat:1066
+#: lib/agentseat_cli/lifecycle.py:206
 msgid "AgentSeat application environment receipt did not appear"
 msgstr "AgentSeat 应用环境回执未出现"
 
-#: bin/agentseat:1068
+#: lib/agentseat_cli/lifecycle.py:208
 msgid "application did not map in the AgentSeat micro-host"
 msgstr "应用未映射到 AgentSeat 微宿主"
 
-#: bin/agentseat:1106
+#: lib/agentseat_cli/lifecycle.py:245
 msgid "AgentSeat daemon socket did not appear"
 msgstr "AgentSeat 守护进程套接字未出现"
 
-#: bin/agentseat:1108
+#: lib/agentseat_cli/lifecycle.py:247
 msgid "application window did not appear"
 msgstr "应用窗口未出现"
 
-#: bin/agentseat:1124
+#: lib/agentseat_cli/lifecycle.py:263
 msgid "host focus isolation failed: before={before!r} after={after!r}"
 msgstr "宿主焦点隔离失败：之前={before!r} 之后={after!r}"
 
-#: bin/agentseat:1222
+#: lib/agentseat_cli/lifecycle.py:361
 msgid "AgentSeat is not running"
 msgstr "AgentSeat 未运行"
 
-#: bin/agentseat:1227
+#: lib/agentseat_cli/lifecycle.py:366
 msgid "AgentSeat daemon returned an invalid session identity"
 msgstr "AgentSeat 守护进程返回了无效的会话身份"
 
-#: bin/agentseat:1231
+#: lib/agentseat_cli/lifecycle.py:370
 #, python-brace-format
 msgid ""
 "AgentSeat runtime state belongs to a different session: expected {expected}, "
 "got {actual}"
 msgstr "AgentSeat 运行时状态属于另一个会话：预期 {expected}，实际 {actual}"
 
-#: bin/agentseat:1238
+#: lib/agentseat_cli/lifecycle.py:377
 #, python-brace-format
 msgid "AgentSeat session changed: expected {expected}, got {actual}"
 msgstr "AgentSeat 会话已改变：预期 {expected}，实际 {actual}"
 
-#: bin/agentseat:1246
+#: lib/agentseat_cli/lifecycle.py:385
 msgid "AgentSeat runtime state does not match the connected daemon"
 msgstr "AgentSeat 运行时状态与已连接的守护进程不匹配"
 
-#: bin/agentseat:1250
+#: lib/agentseat_cli/lifecycle.py:389
 msgid "AgentSeat session has no usable application window"
 msgstr "AgentSeat 会话没有可用的应用窗口"
 
-#: bin/agentseat:1268
+#: lib/agentseat_cli/lifecycle.py:407
 msgid "watch interval must be between 0.1 and 3600 seconds"
 msgstr "watch 间隔必须在 0.1 到 3600 秒之间"
 
-#: bin/agentseat:1270
+#: lib/agentseat_cli/lifecycle.py:409
 msgid "watch count must be zero or a positive integer"
 msgstr "watch 次数必须为 0 或正整数"
 
-#: bin/agentseat:1309
+#: lib/agentseat_cli/lifecycle.py:448
 #, python-brace-format
 msgid "native AgentSeat eye HUD is missing or not executable: {path}"
 msgstr "原生 AgentSeat 小脑袋 HUD 缺失或不可执行：{path}"
 
-#: bin/agentseat:1313
+#: lib/agentseat_cli/lifecycle.py:452
 msgid "AgentSeat must be running before its embedded AI head can start"
 msgstr "必须先运行 AgentSeat，才能启动嵌入式 AI 小脑袋"
 
-#: bin/agentseat:1319
+#: lib/agentseat_cli/lifecycle.py:458
 msgid "AgentSeat private Wayland display is unavailable"
 msgstr "AgentSeat 私有 Wayland 显示不可用"
 
-#: bin/agentseat:1353
+#: lib/agentseat_cli/lifecycle.py:492
 #, python-brace-format
 msgid "AgentSeat eye HUD exited during startup; inspect {path}"
 msgstr "AgentSeat 小脑袋 HUD 启动时退出；请检查 {path}"
 
-#: bin/agentseat:1372
+#: lib/agentseat_cli/lifecycle.py:511
 msgid "AgentSeat eye HUD did not stop"
 msgstr "AgentSeat 小脑袋 HUD 未停止"
 
-#: bin/agentseat:1405
+#: lib/agentseat_cli/lifecycle.py:544
 msgid "daemon did not stop"
 msgstr "守护进程未停止"
 
-#: bin/agentseat:1412
+#: lib/agentseat_cli/lifecycle.py:551
 #, python-brace-format
 msgid "refusing to remove an unexpected AgentSeat socket: {path}"
 msgstr "拒绝删除异常的 AgentSeat 套接字：{path}"
 
-#: bin/agentseat:1423
+#: lib/agentseat_cli/lifecycle.py:562
 msgid "AgentSeat micro-host did not stop"
 msgstr "AgentSeat 微宿主未停止"
 
-#: bin/agentseat:1638
+#: lib/agentseat_cli/observe.py:19
 msgid "capture output must be an absolute .png path"
 msgstr "截图输出必须是绝对 .png 路径"
 
-#: bin/agentseat:1642
+#: lib/agentseat_cli/observe.py:23
 #, python-brace-format
 msgid "capture output parent is unavailable: {error}"
 msgstr "截图输出的父目录不可用：{error}"
 
-#: bin/agentseat:1644
+#: lib/agentseat_cli/observe.py:25
 msgid "capture output parent must be a directory owned by the current user"
 msgstr "截图输出的父目录必须由当前用户拥有"
 
-#: bin/agentseat:1647
+#: lib/agentseat_cli/observe.py:28
 msgid "capture output cannot be a symbolic link"
 msgstr "截图输出不能是符号链接"
 
-#: bin/agentseat:1649
+#: lib/agentseat_cli/observe.py:30
 msgid ""
 "existing capture output must be a regular file owned by the current user"
 msgstr "已有截图输出必须是当前用户拥有的普通文件"
 
-#: bin/agentseat:1660
+#: lib/agentseat_cli/observe.py:41
 msgid "no leased application window is available"
 msgstr "没有可用的已授权应用窗口"
 
-#: bin/agentseat:2112
-msgid "Operate one local application with a private AI pointer and keyboard."
-msgstr "使用 AI 的私有指针和键盘操作一个本地应用。"
+#: lib/agentseat_cli/transport.py:102
+msgid "AgentSeat daemon response exceeds 1 MiB"
+msgstr "AgentSeat 守护进程响应超过 1 MiB"
 
-#: bin/agentseat:2118
-msgid "interface language: auto, en, zh-CN, or zh-TW"
-msgstr "界面语言：auto、en、zh-CN 或 zh-TW"
-
-#: bin/agentseat:2124
-msgid "operate one named AgentSeat application instance"
-msgstr "操作一个具名的 AgentSeat 应用实例"
-
-#: bin/agentseat:2141
-msgid "start a legacy verified demo"
-msgstr "启动已验证的旧版演示"
-
-#: bin/agentseat:2147 bin/agentseat:2167
-msgid "place the outer window on this host workspace"
-msgstr "将外层窗口放到这个宿主工作区"
-
-#: bin/agentseat:2149
-msgid "wrap an arbitrary application command"
-msgstr "封装任意应用命令"
-
-#: bin/agentseat:2153 bin/agentseat:2177
-msgid "force the generic private-XWayland compatibility lane"
-msgstr "强制使用通用私有 XWayland 兼容通道"
-
-#: bin/agentseat:2158 bin/agentseat:2182
-msgid "run the application on a private D-Bus session bus"
-msgstr "在私有 D-Bus 会话总线上运行应用"
-
-#: bin/agentseat:2162 bin/agentseat:2186
-msgid "working directory for the wrapped application"
-msgstr "被封装应用的工作目录"
-
-#: bin/agentseat:2169 bin/agentseat:2193
-msgid "application command after --"
-msgstr "-- 后的应用命令"
-
-#: bin/agentseat:2172
-msgid "wrap an application in a new automatically named instance"
-msgstr "在自动命名的新实例中封装应用"
-
-#: bin/agentseat:2191
-msgid "place the outer window on the current or named host workspace"
-msgstr "将外层窗口放到当前或指定的宿主工作区"
-
-#: bin/agentseat:2194
-msgid "show the controller and protocol version"
-msgstr "显示控制器和协议版本"
-
-#: bin/agentseat:2195
-msgid "show AgentSeat's XDG storage locations"
-msgstr "显示 AgentSeat 的 XDG 存储位置"
-
-#: bin/agentseat:2196
-msgid "show the effective AgentSeat configuration"
-msgstr "显示当前生效的 AgentSeat 配置"
-
-#: bin/agentseat:2197
-msgid "show the current AgentSeat session"
-msgstr "显示当前 AgentSeat 会话"
-
-#: bin/agentseat:2198
-msgid "list named AgentSeat application instances"
-msgstr "列出具名的 AgentSeat 应用实例"
-
-#: bin/agentseat:2201
-msgid "verify that the current application session can be reconnected"
-msgstr "验证当前应用会话是否可以重新连接"
-
-#: bin/agentseat:2205 bin/agentseat:2225
-msgid "fail if the connected session does not have this identity"
-msgstr "如果已连接会话不是此身份则失败"
-
-#: bin/agentseat:2209
-msgid "continuously reconnect and stream session heartbeats"
-msgstr "持续重新连接并输出会话心跳流"
-
-#: bin/agentseat:2215
-msgid "seconds between reconnect checks"
-msgstr "两次重连检查之间的秒数"
-
-#: bin/agentseat:2221
-msgid "number of checks; zero keeps watching until interrupted"
-msgstr "检查次数；0 表示持续监测直到被中断"
-
-#: bin/agentseat:2227
-msgid "control the embedded private-microhost AI head"
-msgstr "控制嵌入私有微宿主的 AI 小脑袋"
-
-#: bin/agentseat:2229
-msgid "show human-priority and AI activity state"
-msgstr "显示人类优先级和 AI 活动状态"
-
-#: bin/agentseat:2230
-msgid "publish the Agent's current AgentSeat action"
-msgstr "发布 Agent 当前的 AgentSeat 操作"
-
-#: bin/agentseat:2233
-msgid "read messages sent from the eye HUD"
-msgstr "读取从小脑袋 HUD 发来的消息"
-
-#: bin/agentseat:2235
-msgid "reply to the human in the eye HUD"
-msgstr "回复小脑袋 HUD 中的人类"
-
-#: bin/agentseat:2257
-msgid "list windows in the wrapped application tree"
-msgstr "列出被封装应用树中的窗口"
-
-#: bin/agentseat:2258
-msgid "pause Agent input"
-msgstr "暂停 Agent 输入"
-
-#: bin/agentseat:2259
-msgid "resume Agent input"
-msgstr "恢复 Agent 输入"
-
-#: bin/agentseat:2260
-msgid "move the private pointer using normalized coordinates"
-msgstr "使用归一化坐标移动私有指针"
-
-#: bin/agentseat:2263
-msgid "click with the private pointer"
-msgstr "使用私有指针点击"
-
-#: bin/agentseat:2265
-msgid "scroll inside the wrapped application"
-msgstr "在被封装应用内滚动"
-
-#: bin/agentseat:2268
-msgid "send one scoped evdev key event"
-msgstr "发送一个限定范围的 evdev 按键事件"
-
-#: bin/agentseat:2271
-msgid "type text with the private keyboard"
-msgstr "使用私有键盘输入文本"
-
-#: bin/agentseat:2275
-msgid ""
-"send key events instead of a private paste, for applications that ignore "
-"paste"
-msgstr "发送按键事件而不是私有粘贴，用于不接受粘贴的应用"
-
-#: bin/agentseat:2276
-msgid "capture the private application output"
-msgstr "截取私有应用输出"
-
-#: bin/agentseat:2289
-msgid "stop the current AgentSeat session"
-msgstr "停止当前 AgentSeat 会话"
-
-#: bin/agentseat:2298
+#: lib/agentseat_cli/transport.py:104
 #, python-brace-format
-msgid "--instance cannot be combined with {command}"
-msgstr "--instance 不能与 {command} 同时使用"
+msgid "cannot reach AgentSeat daemon: {error}"
+msgstr "无法连接 AgentSeat 守护进程：{error}"
 
-#: bin/agentseat:2472
-msgid "unknown command"
-msgstr "未知命令"
+#: lib/agentseat_cli/transport.py:109
+msgid "AgentSeat daemon returned no response"
+msgstr "AgentSeat 守护进程没有返回响应"
+
+#: lib/agentseat_cli/transport.py:113
+#, python-brace-format
+msgid "invalid AgentSeat daemon response: {error}"
+msgstr "AgentSeat 守护进程响应无效：{error}"
+
+#: lib/agentseat_cli/transport.py:115
+msgid "AgentSeat daemon response ID mismatch"
+msgstr "AgentSeat 守护进程响应 ID 不匹配"
+
+#: lib/agentseat_cli/transport.py:120
+msgid "AgentSeat daemon rejected the request"
+msgstr "AgentSeat 守护进程拒绝了请求"
 
 #: native/agentseat-eye.c:447
 msgid "Collapse AgentSeat AI"
