@@ -69,6 +69,8 @@ else
         install -m 0644 "$project_root/lib/libagentseat-atk-dispatch.so" "$stage/lib/libagentseat-atk-dispatch.so"
         install -d "$stage/lib/agentseat_cli"
         install -m 0644 "$project_root"/lib/agentseat_cli/*.py "$stage/lib/agentseat_cli/"
+        # Compile now so the activated release is not written to at run time.
+        python3 -m compileall -q "$stage/lib/agentseat_cli" >/dev/null
         for name in agentseat agentseat-a11y launch-app run-microhost x11-clipboard-owner agentseatd agentseat-eye agentseat-microhost; do
             install -m 0755 "$project_root/bin/$name" "$stage/bin/$name"
         done
